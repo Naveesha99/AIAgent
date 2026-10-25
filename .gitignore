@@ -55,6 +55,7 @@ pnpm-debug.log*
 /backend/exports/
 /backend/runtime/
 /backend/data/uploads/
+/backend/data/datasets/
 /backend/data/temporary/
 /backend/data/exports/
 /backend/data/runtime/

@@ -32,5 +32,5 @@ async def count_upload_bytes(
             size_bytes += len(chunk)
             if size_bytes > max_size_bytes:
                 raise UploadTooLargeError
-    except OSError as exc:
+    except (OSError, ValueError) as exc:
         raise UploadReadError from exc
