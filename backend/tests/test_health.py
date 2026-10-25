@@ -42,6 +42,7 @@ def test_cors_allows_local_frontend_preflight() -> None:
     assert response.status_code == 200
     assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
     assert "GET" in response.headers["access-control-allow-methods"]
+    assert "POST" in response.headers["access-control-allow-methods"]
     assert (
         "accept" in response.headers["access-control-allow-headers"].lower()
     )

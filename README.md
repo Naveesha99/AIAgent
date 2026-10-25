@@ -4,7 +4,7 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 1.5 — Setup verification.** The Next.js frontend includes a configurable API client and a button that checks the FastAPI process health endpoint. FastAPI allows the configured local frontend origins through CORS. Frontend lint/build, backend tests, and the browser connection flow have been verified. Dataset upload, question submission, analysis, and AI functionality are not implemented.
+**Phase 2.1 — File upload API.** The Next.js frontend includes a configurable API client and a button that checks the FastAPI process health endpoint. The backend also accepts CSV-named multipart uploads, enforces a configurable size limit, and returns an acknowledgement without retaining the file. CSV parsing, analysis, question submission, and AI functionality are not implemented.
 
 ## Planned technology stack
 
@@ -16,7 +16,7 @@ An application planned to let users upload CSV files, ask questions in natural l
 ## Repository layout
 
 - `frontend/` — Next.js App Router application with TypeScript, Tailwind CSS, ESLint, and a backend connection check; see [`frontend/README.md`](frontend/README.md).
-- `backend/` — Python and FastAPI application with a versioned health endpoint and explicit CORS origins; see [`backend/README.md`](backend/README.md).
+- `backend/` — Python and FastAPI application with versioned health and bounded CSV upload endpoints; uploaded data is not retained. See [`backend/README.md`](backend/README.md).
 - `docs/` — project architecture and development documentation.
 
 The `docs/` directory is reserved for project architecture and development documentation.
@@ -80,6 +80,7 @@ The frontend listens at `http://localhost:3000`. Open it and select **Check back
 | Frontend tests | No frontend test runner is configured; use the browser connection check |
 | Backend tests | `pytest` (`backend/`, with `.venv` active) |
 | Direct API health check | `curl http://127.0.0.1:8000/api/v1/health` |
+| Upload a CSV | `curl -X POST http://127.0.0.1:8000/api/v1/datasets/upload -F "file=@sample.csv"` |
 | Interactive API docs | Open `http://127.0.0.1:8000/docs` |
 
 See the frontend and backend READMEs for environment setup and platform-specific commands.
@@ -115,8 +116,10 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 3. **Phase 1.3 — Backend initialization:** establish the FastAPI application and process health check. (Complete.)
 4. **Phase 1.4 — Frontend/backend integration:** configure CORS and verify the frontend health check. (Complete.)
 5. **Phase 1.5 — Setup verification:** verify reproducible setup, checks, and local frontend/backend communication. (Complete.)
-6. **Data-analysis workflow:** add CSV upload, data inspection, and isolated analysis capabilities.
-7. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
-8. **Reliability and refinement:** improve error correction, testing, and user experience.
+6. **Phase 2.1 — File upload API:** accept bounded multipart CSV uploads without retaining them. (Complete.)
+7. **CSV validation:** inspect file contents, encoding, headers, and row structure.
+8. **Managed dataset storage:** add temporary storage and lifecycle handling.
+9. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
+10. **Reliability and refinement:** improve error correction, testing, and user experience.
 
 Later phases are planned only; none of their functionality is present yet.
