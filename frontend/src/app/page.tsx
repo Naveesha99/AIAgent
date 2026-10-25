@@ -1,3 +1,5 @@
+import ConnectionStatus from "./ConnectionStatus";
+
 function DataMark() {
   return (
     <svg
@@ -78,6 +80,8 @@ export default function Home() {
             workspace is getting ready.
           </p>
         </section>
+
+        <ConnectionStatus />
 
         <section
           aria-labelledby="workspace-heading"
