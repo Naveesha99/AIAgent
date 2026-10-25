@@ -227,6 +227,61 @@ The endpoint uses the same strict, bounded CSV validator as upload and preview, 
 
 Malformed IDs return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a generic **500** without exposing filesystem paths or parser internals.
 
+## Statistical profiling API
+
+`GET /api/v1/datasets/{dataset_id}/statistics` returns descriptive statistics calculated from the stored CSV:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/statistics
+```
+
+Example response (other fields are omitted here only for brevity):
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "filename": "sample.csv",
+  "row_count": 3,
+  "column_count": 3,
+  "column_statistics": [
+    {
+      "name": "quantity",
+      "data_type": "integer",
+      "non_null_count": 3,
+      "null_count": 0,
+      "numeric": {
+        "count": 3,
+        "mean": 4.0,
+        "median": 4.0,
+        "standard_deviation": 2.0,
+        "variance": 4.0,
+        "minimum": 2.0,
+        "maximum": 6.0,
+        "q1": 3.0,
+        "q3": 5.0,
+        "iqr": 2.0,
+        "sum": 12.0
+      },
+      "distinct_count": null,
+      "mode": null,
+      "mode_frequency": null,
+      "value_frequencies": [],
+      "value_frequencies_truncated": false,
+      "earliest": null,
+      "latest": null
+    }
+  ]
+}
+```
+
+Column statistics follow the Phase 3.1 logical types. Numeric columns include valid numeric count, mean, median, sample standard deviation and sample variance (`ddof=1`), minimum, maximum, sum, Q1, Q3, and IQR. Standard deviation and variance are null with fewer than two valid numeric values. Numeric quartiles use linear interpolation at rank `(n - 1) * q`, matching pandas' default `Series.quantile` interpolation. Numeric values are parsed as finite decimal values; statistics that cannot be represented as finite JSON numbers are returned as `null`.
+
+Categorical and boolean columns include distinct count, mode, and mode frequency. Mode ties are resolved by ascending original string value. Categorical columns include a frequency list capped at 20 values, ordered by descending frequency then value; `value_frequencies_truncated` is true when more than 20 distinct values exist. Boolean columns do not include a frequency list. Other string columns include only distinct count, avoiding large mode/frequency outputs. Date and datetime columns include distinct count and earliest/latest values serialized using ISO 8601; dates use `YYYY-MM-DD`, while datetimes preserve their parsed time and offset. If a datetime column mixes timezone-aware and timezone-naive values, its bounds are null because they cannot be compared unambiguously. Empty CSV cells count as null and are excluded from statistics and frequencies.
+
+Statistics reuse Phase 3.1's type inference and the same CSV validator, limits, and row parsing. The CSV is parsed once per statistics request; numeric observations are retained to calculate exact quantiles, and distinct values are retained for exact distinct counts. Memory therefore grows with numeric observations and distinct strings, within the existing 10 MiB upload, 100,000-row, and 200-column limits. No results are persisted. Inferred types and descriptive summaries are not guarantees of data quality and do not imply causation.
+
+Malformed IDs return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a generic **500** without exposing filesystem paths or internal exceptions.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -245,6 +300,12 @@ Run only the metadata tests with:
 
 ```bash
 pytest tests/test_dataset_metadata.py
+```
+
+Run only the statistical profile tests with:
+
+```bash
+pytest tests/test_dataset_statistics.py
 ```
 
 Run only the storage tests with:

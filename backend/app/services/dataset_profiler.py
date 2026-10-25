@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from datetime import date, datetime
-from typing import Optional
+from typing import Callable, Optional
 from uuid import UUID
 
 from app.core.config import Settings
@@ -254,6 +254,8 @@ def create_dataset_metadata(
     storage: DatasetStorage,
     settings: Settings,
     dataset_id: str,
+    *,
+    row_consumer: Optional[Callable[[tuple[str, ...]], None]] = None,
 ) -> DatasetMetadataResponse:
     """Validate and profile a stored CSV in one bounded-memory pass."""
     profiles: list[_ColumnProfile] = []
@@ -262,6 +264,8 @@ def create_dataset_metadata(
         for profile, value in zip(profiles, row):
             if value != "":
                 profile.add(value)
+        if row_consumer is not None:
+            row_consumer(row)
 
     with storage.open_dataset(dataset_id) as dataset_file:
         filename = storage.get_filename(dataset_id)
