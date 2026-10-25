@@ -4,7 +4,7 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 1.3 — Frontend and backend foundations.** The Next.js frontend is initialized with the App Router, TypeScript, Tailwind CSS, and ESLint; it displays a development-stage workspace shell. The Python backend uses FastAPI and provides a process-level health endpoint. Dataset upload, question submission, analysis, and AI functionality are not implemented.
+**Phase 1.4 — Frontend/backend integration.** The Next.js frontend includes a configurable API client and a button that checks the FastAPI process health endpoint. FastAPI allows the configured local frontend origins through CORS. Dataset upload, question submission, analysis, and AI functionality are not implemented.
 
 ## Planned technology stack
 
@@ -15,8 +15,8 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Repository layout
 
-- `frontend/` — Next.js App Router application with TypeScript, Tailwind CSS, and ESLint; currently a non-functional workspace shell.
-- `backend/` — Python and FastAPI application foundation with a versioned health endpoint; see [`backend/README.md`](backend/README.md) for setup and commands.
+- `frontend/` — Next.js App Router application with TypeScript, Tailwind CSS, ESLint, and a backend connection check; see [`frontend/README.md`](frontend/README.md).
+- `backend/` — Python and FastAPI application with a versioned health endpoint and explicit CORS origins; see [`backend/README.md`](backend/README.md).
 - `docs/` — project architecture and development documentation.
 
 The `docs/` directory is reserved for project architecture and development documentation.
@@ -27,16 +27,26 @@ Frontend development requires Git, Node.js (20.9 or later), and npm. Backend dev
 
 ## Planned local development workflow
 
-The frontend and backend workflows are documented separately.
+The frontend and backend run as separate development servers.
 
 1. From `frontend/`, install dependencies with `npm install`.
-2. Start the development server with `npm run dev`.
-3. Run `npm run lint` and `npm run build` to check the frontend.
-4. For the backend, follow [`backend/README.md`](backend/README.md) to create its virtual environment, install dependencies, start Uvicorn, or run pytest.
+2. Copy `frontend/.env.example` to `frontend/.env.local`; the default API URL is `http://127.0.0.1:8000`.
+3. Start the backend in `backend/` with its virtual environment activated: `uvicorn app.main:app --reload` (default port 8000).
+4. Start the frontend in `frontend/` with `npm run dev` (default port 3000).
+5. Visit `http://localhost:3000` and select **Check backend connection**. To test the API directly, request `http://127.0.0.1:8000/api/v1/health`.
+6. Run `npm run lint` and `npm run build` in `frontend/`; run `pytest` in `backend/`.
+
+See the frontend and backend READMEs for environment setup and platform-specific commands.
 
 ## Environment configuration
 
-The root `.env.example` lists safe placeholders for anticipated cross-application configuration. `backend/.env.example` documents backend-specific settings; backend settings are read from process environment variables, and that file is not loaded automatically. For frontend-local configuration, place values in `frontend/.env.local`; that file is ignored by Git. Never commit real credentials or add private keys to `NEXT_PUBLIC_` variables.
+`frontend/.env.example` is the Next.js configuration template and defines `NEXT_PUBLIC_API_BASE_URL`. Copy it to `frontend/.env.local`; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS`; the backend reads process environment variables and does not automatically load that example file. The root `.env.example` remains a repository-level reference and is not loaded automatically. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
+
+## Integration troubleshooting
+
+- **Backend unavailable:** verify Uvicorn is running on `127.0.0.1:8000` and that `curl http://127.0.0.1:8000/api/v1/health` returns the expected JSON.
+- **CORS error:** ensure the browser's frontend origin (`http://localhost:3000` or `http://127.0.0.1:3000`) appears in backend `CORS_ORIGINS`, then restart the backend.
+- **Wrong or missing API URL:** check `frontend/.env.local` for `NEXT_PUBLIC_API_BASE_URL`, ensure it is an absolute HTTP(S) base URL, and restart Next.js after changing it.
 
 ## Development conventions
 
@@ -56,8 +66,9 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 1. **Phase 1.1 — Repository setup:** create the folder structure and initial conventions. (Complete.)
 2. **Phase 1.2 — Frontend initialization:** establish the Next.js application shell and frontend tooling. (Complete.)
 3. **Phase 1.3 — Backend initialization:** establish the FastAPI application and process health check. (Complete.)
-4. **Data-analysis workflow:** add CSV upload, data inspection, and isolated analysis capabilities.
-5. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
-6. **Reliability and refinement:** improve error correction, testing, and user experience.
+4. **Phase 1.4 — Frontend/backend integration:** configure CORS and verify the frontend health check. (Complete.)
+5. **Data-analysis workflow:** add CSV upload, data inspection, and isolated analysis capabilities.
+6. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
+7. **Reliability and refinement:** improve error correction, testing, and user experience.
 
 Later phases are planned only; none of their functionality is present yet.

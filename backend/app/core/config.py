@@ -15,6 +15,18 @@ class Settings(BaseSettings):
     app_env: Literal["development", "production"] = "development"
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8000, ge=1, le=65535)
+    cors_origins: str = (
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        """Parse the comma-separated list of explicitly allowed browser origins."""
+        return [
+            origin.strip()
+            for origin in self.cors_origins.split(",")
+            if origin.strip()
+        ]
 
 
 @lru_cache
