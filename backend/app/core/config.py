@@ -1,6 +1,7 @@
 """Environment-backed application settings."""
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Literal
 
 from pydantic import Field
@@ -20,6 +21,12 @@ class Settings(BaseSettings):
     max_csv_rows: int = Field(default=100_000, gt=0)
     max_csv_field_size: int = Field(default=1024 * 1024, gt=0)
     max_csv_validation_lines: int = Field(default=200_000, gt=0)
+    dataset_storage_dir: Path = Field(
+        default_factory=lambda: Path(__file__).resolve().parents[2]
+        / "data"
+        / "datasets"
+    )
+    dataset_ttl_hours: int = Field(default=24, gt=0)
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000"
     )

@@ -1,6 +1,6 @@
 # AI Data Analyst API
 
-The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads. Uploaded bytes are checked for UTF-8 encoding and tabular structure, then acknowledged; they are not retained or available as a dataset after the request.
+The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
 ## Requirements
 
@@ -52,6 +52,8 @@ export MAX_CSV_COLUMNS=200
 export MAX_CSV_ROWS=100000
 export MAX_CSV_FIELD_SIZE=1048576
 export MAX_CSV_VALIDATION_LINES=200000
+export DATASET_STORAGE_DIR=data/datasets
+export DATASET_TTL_HOURS=24
 ```
 
 On Windows PowerShell:
@@ -66,9 +68,11 @@ $env:MAX_CSV_COLUMNS = "200"
 $env:MAX_CSV_ROWS = "100000"
 $env:MAX_CSV_FIELD_SIZE = "1048576"
 $env:MAX_CSV_VALIDATION_LINES = "200000"
+$env:DATASET_STORAGE_DIR = "data/datasets"
+$env:DATASET_TTL_HOURS = "24"
 ```
 
-`APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
+`APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `DATASET_STORAGE_DIR` defaults to `backend/data/datasets`; a relative override is resolved relative to the backend directory. `DATASET_TTL_HOURS` defaults to 24 hours. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
 
 ```bash
 uvicorn app.main:app --reload --host "$API_HOST" --port "$API_PORT"
@@ -132,12 +136,15 @@ Validation also stops when any configured resource limit is reached: 200 columns
 }
 ```
 
-`dataset_id` is only a generated acknowledgement identifier; it does not refer to retained data. The content is validated from the upload stream, and the uploaded file is closed after processing. No permanent or managed temporary dataset storage is created, so later requests cannot use the acknowledged dataset. Managed storage and lifecycle handling are planned for Phase 2.3.
+`dataset_id` is a server-generated UUID and names the internally stored file; original filenames are display metadata only. Validated bytes are written incrementally to a mode-restricted staging file, then atomically finalized without replacing an existing dataset. Dataset files are stored under `DATASET_STORAGE_DIR`, outside publicly served directories. The uploaded multipart file and staging files are closed or removed after processing.
+
+The default retention period is 24 hours from the stored file's modification time. Expired datasets and partial-upload files older than the same TTL are removed when a new upload arrives, and cleanup can also be invoked explicitly through the storage service. There is no periodic background cleanup. Active staged uploads and files opened through the storage service are protected from cleanup. Local disk storage is process-local, single-instance development storage; it has no database, replication, or production lifecycle guarantees.
 
 Expected errors:
 
 - **400 Bad Request** — invalid filename or CSV content, including unsupported encoding, duplicate/empty headers, missing data rows, inconsistent row widths, malformed CSV, or read/close failure. For example: `{"detail":"The CSV must use valid UTF-8 encoding."}`
 - **413 Payload Too Large** — actual received bytes exceed `MAX_UPLOAD_SIZE_BYTES`, or a CSV validation resource limit is exceeded.
+- **500 Internal Server Error** — storage is unavailable or safe finalization fails; no successful response is returned.
 - **422 Unprocessable Entity** — multipart `file` field is missing, the multipart filename is empty, or the request is malformed.
 
 The endpoint documents these responses in `/docs`.
@@ -150,4 +157,8 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and do not start a separate server or contact external services.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Run only the storage tests with:
+
+```bash
+pytest tests/test_dataset_storage.py
+```

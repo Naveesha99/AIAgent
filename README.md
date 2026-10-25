@@ -4,7 +4,7 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 2.2 — CSV validation.** The Next.js frontend includes a configurable API client and a button that checks the FastAPI process health endpoint. The backend accepts multipart CSV uploads, enforces configurable resource limits, validates UTF-8 CSV structure, and returns an acknowledgement without retaining the file. Dataset storage, analysis, question submission, and AI functionality are not implemented.
+**Phase 2.3 — Temporary dataset storage.** The Next.js frontend includes a configurable API client and a button that checks the FastAPI process health endpoint. The backend validates bounded UTF-8 CSV uploads and stores them in private local temporary storage with a 24-hour default retention period. Analysis, question submission, and AI functionality are not implemented.
 
 ## Planned technology stack
 
@@ -16,7 +16,7 @@ An application planned to let users upload CSV files, ask questions in natural l
 ## Repository layout
 
 - `frontend/` — Next.js App Router application with TypeScript, Tailwind CSS, ESLint, and a backend connection check; see [`frontend/README.md`](frontend/README.md).
-- `backend/` — Python and FastAPI application with versioned health and CSV validation endpoints; uploaded data is not retained. See [`backend/README.md`](backend/README.md).
+- `backend/` — Python and FastAPI application with versioned health and CSV upload/validation endpoints using private local temporary storage. See [`backend/README.md`](backend/README.md).
 - `docs/` — project architecture and development documentation.
 
 The `docs/` directory is reserved for project architecture and development documentation.
@@ -118,8 +118,8 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 5. **Phase 1.5 — Setup verification:** verify reproducible setup, checks, and local frontend/backend communication. (Complete.)
 6. **Phase 2.1 — File upload API:** accept bounded multipart CSV uploads without retaining them. (Complete.)
 7. **Phase 2.2 — CSV validation:** inspect UTF-8 contents, headers, and row structure with configurable resource limits. (Complete.)
-8. **Phase 2.3 — Managed dataset storage:** add temporary storage and lifecycle handling.
+8. **Phase 2.3 — Temporary dataset storage:** keep validated uploads on private local disk with expiration and cleanup. (Complete; development/single-instance only.)
 9. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
 10. **Reliability and refinement:** improve error correction, testing, and user experience.
 
-Later phases are planned only; none of their functionality is present yet.
+Later phases are planned only; none of their functionality is present yet. Local temporary file storage is not production dataset storage.
