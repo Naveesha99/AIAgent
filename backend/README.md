@@ -149,6 +149,18 @@ Expected errors:
 
 The endpoint documents these responses in `/docs`.
 
+## Dataset preview API
+
+`GET /api/v1/datasets/{dataset_id}/preview` returns one page from a stored CSV:
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/preview?page=1&page_size=10"
+```
+
+`page` defaults to `1` and must be at least `1`. `page_size` defaults to `10` and must be between `1` and `100`. The typed response includes the dataset ID and original display filename, total data rows (excluding the header), ordered columns, page rows, and pagination metadata. Empty CSV cells are represented as JSON `null`. Values remain strings, preserving content such as leading zeros; quoted commas, quotes, multiline fields, and UTF-8 BOM are handled by the same strict CSV validation used during upload.
+
+The API scans the stored CSV to validate it, count logical data rows, and collect only the requested page. Consequently, later pages still require a bounded-memory scan of the file. Invalid IDs or pagination values return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a safe **500** response. The preview endpoint does not expose storage paths or file contents beyond the requested page.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -157,7 +169,13 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Run only the storage tests with:
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Run only the preview tests with:
+
+```bash
+pytest tests/test_dataset_preview.py
+```
+
+Run only the storage tests with:
 
 ```bash
 pytest tests/test_dataset_storage.py

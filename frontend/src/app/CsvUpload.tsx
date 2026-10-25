@@ -3,8 +3,11 @@
 import { ChangeEvent, DragEvent, useRef, useState } from "react";
 
 import {
+  DatasetPreviewError,
+  DatasetPreviewResponse,
   DatasetUploadError,
   DatasetUploadResponse,
+  getDatasetPreview,
   getConfiguredMaxUploadSizeBytes,
   uploadDataset,
 } from "@/lib/api";
@@ -46,6 +49,7 @@ function formatApiError(error: unknown): string {
 export default function CsvUpload() {
   const inputRef = useRef<HTMLInputElement>(null);
   const uploadingRef = useRef(false);
+  const previewLoadingRef = useRef(false);
   const [selectedFile, setSelectedFile] = useState<File>();
   const [uploadState, setUploadState] = useState<UploadState>("idle");
   const [validationError, setValidationError] = useState<string>();
@@ -53,15 +57,20 @@ export default function CsvUpload() {
   const [progress, setProgress] = useState<number>();
   const [uploadedDataset, setUploadedDataset] =
     useState<DatasetUploadResponse>();
+  const [preview, setPreview] = useState<DatasetPreviewResponse>();
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState<string>();
   const [dragActive, setDragActive] = useState(false);
 
   function acceptFile(file: File | undefined) {
-    if (!file || uploadingRef.current) {
+    if (!file || uploadingRef.current || previewLoadingRef.current) {
       return;
     }
     const error = validateFile(file);
     setUploadError(undefined);
     setUploadedDataset(undefined);
+    setPreview(undefined);
+    setPreviewError(undefined);
     setValidationError(error);
     setSelectedFile(error ? undefined : file);
     setUploadState(error ? "error" : "idle");
@@ -77,7 +86,7 @@ export default function CsvUpload() {
 
   function handleDragOver(event: DragEvent<HTMLButtonElement>) {
     event.preventDefault();
-    if (!uploadingRef.current) {
+    if (!uploadingRef.current && !previewLoadingRef.current) {
       setDragActive(true);
     }
   }
@@ -94,7 +103,7 @@ export default function CsvUpload() {
   function handleDrop(event: DragEvent<HTMLButtonElement>) {
     event.preventDefault();
     setDragActive(false);
-    if (uploadingRef.current) {
+    if (uploadingRef.current || previewLoadingRef.current) {
       return;
     }
     const files = Array.from(event.dataTransfer.files);
@@ -106,6 +115,28 @@ export default function CsvUpload() {
       return;
     }
     acceptFile(files[0]);
+  }
+
+  async function loadPreview(datasetId: string, page: number) {
+    if (previewLoadingRef.current) {
+      return;
+    }
+    previewLoadingRef.current = true;
+    setPreviewLoading(true);
+    setPreviewError(undefined);
+    try {
+      const response = await getDatasetPreview(datasetId, page);
+      setPreview(response);
+    } catch (error) {
+      setPreviewError(
+        error instanceof DatasetPreviewError
+          ? error.message
+          : "The file was uploaded, but its preview could not be loaded.",
+      );
+    } finally {
+      previewLoadingRef.current = false;
+      setPreviewLoading(false);
+    }
   }
 
   async function handleUpload() {
@@ -125,6 +156,7 @@ export default function CsvUpload() {
       setUploadState("success");
       setSelectedFile(undefined);
       setProgress(undefined);
+      void loadPreview(result.dataset_id, 1);
       if (inputRef.current) {
         inputRef.current.value = "";
       }
@@ -138,6 +170,7 @@ export default function CsvUpload() {
   }
 
   const isUploading = uploadState === "uploading";
+  const isBusy = isUploading || previewLoading;
   const currentError = validationError ?? uploadError;
 
   return (
@@ -162,7 +195,7 @@ export default function CsvUpload() {
         accept=".csv,text/csv"
         aria-label="Choose a CSV file"
         className="hidden"
-        disabled={isUploading}
+        disabled={isBusy}
         onChange={handleFileChange}
         ref={inputRef}
         tabIndex={-1}
@@ -177,7 +210,7 @@ export default function CsvUpload() {
             ? "border-indigo-600 bg-indigo-50"
             : "border-slate-300 bg-slate-50 hover:border-indigo-400 hover:bg-indigo-50/50"
         } disabled:cursor-wait disabled:opacity-70`}
-        disabled={isUploading}
+        disabled={isBusy}
         onClick={() => inputRef.current?.click()}
         onDragEnter={handleDragOver}
         onDragLeave={handleDragLeave}
@@ -230,7 +263,7 @@ export default function CsvUpload() {
           </div>
           <button
             className="min-h-10 shrink-0 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 disabled:cursor-not-allowed disabled:opacity-60"
-            disabled={isUploading}
+            disabled={isBusy}
             onClick={() => {
               setSelectedFile(undefined);
               setUploadState("idle");
@@ -247,7 +280,7 @@ export default function CsvUpload() {
       {selectedFile && (
         <button
           className="mt-4 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-indigo-700 px-5 text-sm font-semibold text-white transition-colors hover:bg-indigo-800 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 disabled:cursor-wait disabled:opacity-60 sm:w-auto"
-          disabled={isUploading}
+          disabled={isBusy}
           onClick={handleUpload}
           type="button"
         >
@@ -314,7 +347,10 @@ export default function CsvUpload() {
           </p>
           <button
             className="mt-3 min-h-10 rounded-md border border-emerald-700 px-3 font-medium text-emerald-900 hover:bg-emerald-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-800"
+            disabled={isBusy}
             onClick={() => {
+              setPreview(undefined);
+              setPreviewError(undefined);
               setUploadedDataset(undefined);
               setUploadState("idle");
               inputRef.current?.click();
@@ -324,6 +360,154 @@ export default function CsvUpload() {
             Upload another CSV
           </button>
         </div>
+      )}
+
+      {uploadedDataset && (
+        <section
+          aria-labelledby="dataset-preview-heading"
+          className="mt-6 rounded-xl border border-slate-200 bg-white"
+        >
+          <div className="border-b border-slate-100 p-4 sm:p-5">
+            <h3
+              className="text-base font-semibold text-slate-900"
+              id="dataset-preview-heading"
+            >
+              Dataset preview
+            </h3>
+            {preview && (
+              <>
+                <p className="mt-2 break-words text-sm font-medium text-slate-800">
+                  {preview.filename}
+                </p>
+                <dl className="mt-3 flex flex-wrap gap-x-6 gap-y-2 text-sm text-slate-600">
+                  <div>
+                    <dt className="inline">Rows: </dt>
+                    <dd className="inline font-medium text-slate-900">
+                      {preview.row_count.toLocaleString()}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="inline">Columns: </dt>
+                    <dd className="inline font-medium text-slate-900">
+                      {preview.column_count.toLocaleString()}
+                    </dd>
+                  </div>
+                </dl>
+                <p className="mt-2 break-words text-xs text-slate-600">
+                  <span className="font-medium text-slate-700">
+                    Column names:
+                  </span>{" "}
+                  {preview.columns.join(", ")}
+                </p>
+              </>
+            )}
+          </div>
+
+          {previewLoading && (
+            <p aria-live="polite" className="p-4 text-sm text-slate-700" role="status">
+              Loading dataset preview…
+            </p>
+          )}
+
+          {previewError && (
+            <div
+              aria-live="assertive"
+              className="m-4 rounded-lg border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+              role="alert"
+            >
+              <p>
+                The file was uploaded successfully, but the preview could not
+                be loaded. {previewError}
+              </p>
+              <button
+                className="mt-3 min-h-10 rounded-md border border-red-700 px-3 font-medium hover:bg-red-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-red-800 disabled:cursor-wait disabled:opacity-60"
+                disabled={isBusy}
+                onClick={() =>
+                  loadPreview(uploadedDataset.dataset_id, preview?.page ?? 1)
+                }
+                type="button"
+              >
+                Retry preview
+              </button>
+            </div>
+          )}
+
+          {preview && !previewLoading && (
+            <>
+              {preview.rows.length === 0 ? (
+                <p className="p-4 text-sm text-slate-600">
+                  There are no rows on this page.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full border-collapse text-left text-sm">
+                    <thead className="bg-slate-50">
+                      <tr>
+                        {preview.columns.map((column, index) => (
+                          <th
+                            className="max-w-64 border-b border-slate-200 px-4 py-3 font-semibold text-slate-800"
+                            key={`${column}-${index}`}
+                            scope="col"
+                          >
+                            <span className="break-words">{column}</span>
+                          </th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {preview.rows.map((row, rowIndex) => (
+                        <tr className="odd:bg-white even:bg-slate-50/70" key={rowIndex}>
+                          {preview.columns.map((column, columnIndex) => (
+                            <td
+                              className="max-w-64 border-b border-slate-100 px-4 py-3 align-top text-slate-700"
+                              key={`${column}-${columnIndex}`}
+                            >
+                              <span className="block whitespace-pre-wrap break-words">
+                                {row[column] === null || row[column] === ""
+                                  ? "—"
+                                  : row[column]}
+                              </span>
+                            </td>
+                          ))}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+              <nav
+                aria-label="Dataset preview pages"
+                className="flex flex-col gap-3 border-t border-slate-100 p-4 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <p aria-live="polite" className="text-sm text-slate-600" role="status">
+                  Page {preview.page} of {preview.total_pages}
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    className="min-h-10 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={isBusy || preview.page <= 1}
+                    onClick={() =>
+                      loadPreview(uploadedDataset.dataset_id, preview.page - 1)
+                    }
+                    type="button"
+                  >
+                    Previous
+                  </button>
+                  <button
+                    className="min-h-10 rounded-md border border-slate-300 px-3 text-sm font-medium text-slate-700 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-indigo-700 disabled:cursor-not-allowed disabled:opacity-50"
+                    disabled={isBusy || preview.page >= preview.total_pages}
+                    onClick={() =>
+                      loadPreview(uploadedDataset.dataset_id, preview.page + 1)
+                    }
+                    type="button"
+                  >
+                    Next
+                  </button>
+                </div>
+              </nav>
+            </>
+          )}
+        </section>
       )}
     </section>
   );

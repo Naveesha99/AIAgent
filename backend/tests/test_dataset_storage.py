@@ -139,7 +139,7 @@ def test_cleanup_removes_expired_files_and_stale_partial_files(
     stale_partial.write_bytes(b"partial")
     os.utime(stale_partial, (now - 90_000, now - 90_000))
 
-    assert storage.cleanup_expired(now=now) == 2
+    assert storage.cleanup_expired(now=now) == 3
     assert not storage.exists(expired_record.dataset_id)
     assert storage.exists(current_record.dataset_id)
     assert not stale_partial.exists()
@@ -152,16 +152,16 @@ def test_cleanup_and_delete_protect_open_dataset(
     staged = storage.stage_upload(BytesIO(b"active"), 20)
     stored = storage.finalize(staged)
     path = storage.resolve(stored.dataset_id)
-    old_time = time.time() - 90_000
-    os.utime(path, (old_time, old_time))
 
     with storage.open_dataset(stored.dataset_id) as dataset_file:
+        old_time = time.time() - 90_000
+        os.utime(path, (old_time, old_time))
         with pytest.raises(DatasetInUseError):
             storage.delete(stored.dataset_id)
         assert storage.cleanup_expired(now=time.time()) == 0
         assert dataset_file.read() == b"active"
 
-    assert storage.cleanup_expired(now=time.time()) == 1
+    assert storage.cleanup_expired(now=time.time()) == 2
     assert not storage.exists(stored.dataset_id)
 
 

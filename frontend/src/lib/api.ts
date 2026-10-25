@@ -11,6 +11,18 @@ export type DatasetUploadResponse = {
   status: "uploaded";
 };
 
+export type DatasetPreviewResponse = {
+  dataset_id: string;
+  filename: string;
+  row_count: number;
+  column_count: number;
+  columns: string[];
+  rows: Array<Record<string, string | null>>;
+  page: number;
+  page_size: number;
+  total_pages: number;
+};
+
 export class ApiRequestError extends Error {
   constructor(message: string) {
     super(message);
@@ -24,6 +36,16 @@ export class DatasetUploadError extends ApiRequestError {
   constructor(message: string, statusCode?: number) {
     super(message);
     this.name = "DatasetUploadError";
+    this.statusCode = statusCode;
+  }
+}
+
+export class DatasetPreviewError extends ApiRequestError {
+  readonly statusCode?: number;
+
+  constructor(message: string, statusCode?: number) {
+    super(message);
+    this.name = "DatasetPreviewError";
     this.statusCode = statusCode;
   }
 }
@@ -253,4 +275,133 @@ export function uploadDataset(
     formData.append("file", file);
     request.send(formData);
   });
+}
+
+function isDatasetPreviewResponse(
+  payload: unknown,
+  datasetId: string,
+  requestedPage: number,
+  requestedPageSize: number,
+): payload is DatasetPreviewResponse {
+  if (typeof payload !== "object" || payload === null) {
+    return false;
+  }
+  const response = payload as Record<string, unknown>;
+  if (
+    response.dataset_id !== datasetId ||
+    typeof response.filename !== "string" ||
+    typeof response.row_count !== "number" ||
+    !Number.isSafeInteger(response.row_count) ||
+    response.row_count < 0 ||
+    typeof response.column_count !== "number" ||
+    !Number.isSafeInteger(response.column_count) ||
+    response.column_count < 1 ||
+    !Array.isArray(response.columns) ||
+    !Array.isArray(response.rows) ||
+    typeof response.page !== "number" ||
+    response.page !== requestedPage ||
+    typeof response.page_size !== "number" ||
+    response.page_size !== requestedPageSize ||
+    typeof response.total_pages !== "number" ||
+    !Number.isSafeInteger(response.total_pages) ||
+    response.total_pages < 1
+  ) {
+    return false;
+  }
+
+  const columns: unknown[] = response.columns;
+  if (
+    columns.length !== response.column_count ||
+    !columns.every((column: unknown) => typeof column === "string")
+  ) {
+    return false;
+  }
+
+  const columnNames = columns as string[];
+  return response.rows.every(
+    (row) =>
+      typeof row === "object" &&
+      row !== null &&
+      columnNames.every(
+        (column) =>
+          column in row &&
+          (typeof (row as Record<string, unknown>)[column] === "string" ||
+            (row as Record<string, unknown>)[column] === null),
+      ),
+  );
+}
+
+function getPreviewErrorMessage(
+  statusCode: number,
+  responseText: string,
+): string {
+  if (statusCode === 404) {
+    return "This dataset could not be found or has expired. Upload it again to continue.";
+  }
+
+  let payload: unknown;
+  try {
+    payload = JSON.parse(responseText);
+  } catch {
+    payload = null;
+  }
+  if (
+    typeof payload === "object" &&
+    payload !== null &&
+    "detail" in payload &&
+    typeof payload.detail === "string" &&
+    statusCode >= 400 &&
+    statusCode < 500
+  ) {
+    return payload.detail;
+  }
+  if (statusCode >= 500) {
+    return "The dataset was uploaded, but the server could not read its preview.";
+  }
+  return `The preview request failed with HTTP ${statusCode}.`;
+}
+
+export async function getDatasetPreview(
+  datasetId: string,
+  page: number,
+  pageSize = 10,
+): Promise<DatasetPreviewResponse> {
+  const path =
+    `/api/v1/datasets/${encodeURIComponent(datasetId)}/preview` +
+    `?page=${page}&page_size=${pageSize}`;
+  const url = `${getApiBaseUrl()}${path}`;
+  let response: Response;
+  try {
+    response = await fetch(url, {
+      method: "GET",
+      headers: { Accept: "application/json" },
+      cache: "no-store",
+    });
+  } catch {
+    throw new DatasetPreviewError(
+      "The dataset was uploaded, but the backend could not be reached to load its preview.",
+    );
+  }
+
+  if (!response.ok) {
+    throw new DatasetPreviewError(
+      getPreviewErrorMessage(response.status, await response.text()),
+      response.status,
+    );
+  }
+
+  let payload: unknown;
+  try {
+    payload = await response.json();
+  } catch {
+    throw new DatasetPreviewError(
+      "The dataset was uploaded, but the backend returned an invalid preview response.",
+    );
+  }
+  if (!isDatasetPreviewResponse(payload, datasetId, page, pageSize)) {
+    throw new DatasetPreviewError(
+      "The dataset was uploaded, but its preview response was invalid.",
+    );
+  }
+  return payload;
 }

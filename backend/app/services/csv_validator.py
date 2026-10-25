@@ -30,6 +30,7 @@ class CsvValidationResult:
     column_count: int
     data_row_count: int
     column_names: tuple[str, ...]
+    preview_rows: tuple[tuple[Optional[str], ...], ...] = ()
 
 
 class _ValidationLines(Iterator[str]):
@@ -102,8 +103,17 @@ class _ValidationLines(Iterator[str]):
 def validate_csv(
     binary_file: BinaryIO,
     settings: Settings,
+    *,
+    preview_page: Optional[int] = None,
+    preview_page_size: Optional[int] = None,
 ) -> CsvValidationResult:
-    """Validate a seekable binary upload stream without retaining parsed rows."""
+    """Validate CSV and optionally retain only one bounded preview page."""
+    if (preview_page is None) != (preview_page_size is None):
+        raise ValueError("Both preview pagination values must be supplied together.")
+    if preview_page is not None and preview_page < 1:
+        raise ValueError("Preview page must be positive.")
+    if preview_page_size is not None and preview_page_size < 1:
+        raise ValueError("Preview page size must be positive.")
     try:
         prefix = binary_file.read(len(_UTF8_BOM))
         binary_file.seek(0)
@@ -148,6 +158,12 @@ def validate_csv(
                     )
 
                 data_row_count = 0
+                preview_rows: list[tuple[Optional[str], ...]] = []
+                first_preview_row = (
+                    (preview_page - 1) * preview_page_size
+                    if preview_page is not None and preview_page_size is not None
+                    else None
+                )
                 for row in reader:
                     if not row or all(not value.strip() for value in row):
                         continue
@@ -159,6 +175,16 @@ def validate_csv(
                         raise CsvValidationError(
                             "The CSV exceeds the maximum number of data rows allowed.",
                             resource_limit=True,
+                        )
+                    if (
+                        first_preview_row is not None
+                        and preview_page_size is not None
+                        and first_preview_row
+                        <= data_row_count
+                        < first_preview_row + preview_page_size
+                    ):
+                        preview_rows.append(
+                            tuple(value if value != "" else None for value in row)
                         )
                     data_row_count += 1
 
@@ -172,6 +198,7 @@ def validate_csv(
                     column_count=len(header),
                     data_row_count=data_row_count,
                     column_names=tuple(header),
+                    preview_rows=tuple(preview_rows),
                 )
             except UnicodeDecodeError as exc:
                 raise CsvValidationError(

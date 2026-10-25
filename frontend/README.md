@@ -22,11 +22,11 @@ Start the backend separately using the instructions in [`../backend/README.md`](
 
 ## Upload a CSV
 
-Start the backend separately using [`../backend/README.md`](../backend/README.md), then open the frontend and choose **Browse files** or drag one `.csv` file into the upload area. The UI provides immediate extension, empty-file, and configured-size feedback. On upload it sends the file in a `file` multipart field to `POST /api/v1/datasets/upload`. The backend validates and stores it in private temporary storage before confirming success; the UI retains and displays the returned dataset ID. Dataset preview, deletion, analysis, and chat are not available yet.
+Start the backend separately using [`../backend/README.md`](../backend/README.md), then open the frontend and choose **Browse files** or drag one `.csv` file into the upload area. The UI provides immediate extension, empty-file, and configured-size feedback. On upload it sends the file in a `file` multipart field to `POST /api/v1/datasets/upload`. The backend validates and stores it in private temporary storage before confirming success; the UI retains and displays the returned dataset ID and requests the first page from `GET /api/v1/datasets/{dataset_id}/preview`. The preview shows the filename, total rows and columns, ordered column names, and page rows. Use **Previous** and **Next** to request more rows. Empty CSV cells are shown as an em dash. Dataset deletion, analysis, and chat are not available yet.
 
 Upload progress is shown only when the browser reports measurable XMLHttpRequest upload events. If those events do not include a computable total, the UI shows an indeterminate uploading state rather than inventing a percentage. Even when byte transfer reaches 100%, success is not shown until the backend confirms validation and storage.
 
-There is no frontend unit-test runner configured. Upload behavior can be manually checked against the running backend.
+There is no frontend unit-test runner configured. Upload and preview behavior can be manually checked against the running backend.
 
 ## Checks
 
