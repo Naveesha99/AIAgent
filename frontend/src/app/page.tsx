@@ -1,4 +1,5 @@
 import ConnectionStatus from "./ConnectionStatus";
+import CsvUpload from "./CsvUpload";
 
 function DataMark() {
   return (
@@ -82,6 +83,7 @@ export default function Home() {
         </section>
 
         <ConnectionStatus />
+        <CsvUpload />
 
         <section
           aria-labelledby="workspace-heading"
@@ -100,7 +102,7 @@ export default function Home() {
               </p>
             </div>
             <span className="w-fit rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-600">
-              No dataset loaded
+              Analysis tools coming later
             </span>
           </div>
 
@@ -110,22 +112,11 @@ export default function Home() {
                 <FileMark />
               </span>
               <h3 className="mt-5 text-lg font-semibold text-slate-900">
-                Start with a dataset
+                Your analysis workspace
               </h3>
               <p className="mt-2 max-w-md text-sm leading-6 text-slate-600">
-                Your dataset and future analysis results will appear here.
-                Uploads are not available yet.
-              </p>
-              <button
-                className="mt-6 inline-flex min-h-11 items-center justify-center rounded-lg bg-slate-200 px-4 text-sm font-medium text-slate-500 disabled:cursor-not-allowed"
-                disabled
-                type="button"
-              >
-                Choose a CSV file
-                <span className="ml-2 text-xs font-normal">(coming soon)</span>
-              </button>
-              <p className="mt-3 text-xs text-slate-500">
-                CSV upload will be available in a future update.
+                CSV uploads are validated and stored securely. Dataset preview,
+                questions, and analysis will be added in a later phase.
               </p>
             </div>
 
@@ -154,8 +145,8 @@ export default function Home() {
                 </button>
               </div>
               <p className="mt-2 text-xs leading-5 text-slate-500" id="question-help">
-                Question submission is disabled until dataset upload and backend
-                analysis are implemented.
+                Question submission is not available yet. Dataset preview and
+                analysis are planned for a later phase.
               </p>
             </div>
           </div>
