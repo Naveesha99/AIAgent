@@ -1,0 +1,76 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+ENV/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.nyc_output/
+coverage/
+
+# Node.js and frontend build output
+node_modules/
+.next/
+out/
+dist/
+build/
+.turbo/
+.vercel/
+*.tsbuildinfo
+next-env.d.ts
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# Local environment and secrets
+**/.env
+**/.env.*
+!.env.example
+!**/.env.example
+
+# Local datasets, temporary analysis files, exports, and runtime data
+/uploads/
+/tmp/
+/temp/
+/exports/
+/runtime/
+/data/uploads/
+/data/temporary/
+/data/exports/
+/data/runtime/
+/backend/uploads/
+/backend/tmp/
+/backend/temp/
+/backend/exports/
+/backend/runtime/
+/backend/data/uploads/
+/backend/data/temporary/
+/backend/data/exports/
+/backend/data/runtime/
+/frontend/uploads/
+/frontend/data/uploads/
+/frontend/data/temporary/
+/frontend/data/exports/
+/frontend/data/runtime/
+
+# Logs and generated artifacts
+*.log
+*.tmp
+*.temp
+
+# IDE and operating-system files
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
