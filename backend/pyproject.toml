@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools==80.9.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ai-data-analyst-api"
+version = "0.1.0"
+description = "Backend API for the AI Data Analyst application"
+requires-python = ">=3.9"
+dependencies = [
+    "fastapi==0.128.8",
+    "pydantic-settings==2.11.0",
+    "uvicorn[standard]==0.39.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "httpx==0.28.1",
+    "pytest==8.4.2",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
