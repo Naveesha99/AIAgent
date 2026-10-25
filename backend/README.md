@@ -52,6 +52,7 @@ export MAX_CSV_COLUMNS=200
 export MAX_CSV_ROWS=100000
 export MAX_CSV_FIELD_SIZE=1048576
 export MAX_CSV_VALIDATION_LINES=200000
+export DATA_QUALITY_SAMPLE_LIMIT=5
 export DATASET_STORAGE_DIR=data/datasets
 export DATASET_TTL_HOURS=24
 ```
@@ -68,6 +69,7 @@ $env:MAX_CSV_COLUMNS = "200"
 $env:MAX_CSV_ROWS = "100000"
 $env:MAX_CSV_FIELD_SIZE = "1048576"
 $env:MAX_CSV_VALIDATION_LINES = "200000"
+$env:DATA_QUALITY_SAMPLE_LIMIT = "5"
 $env:DATASET_STORAGE_DIR = "data/datasets"
 $env:DATASET_TTL_HOURS = "24"
 ```
@@ -282,6 +284,66 @@ Statistics reuse Phase 3.1's type inference and the same CSV validator, limits, 
 
 Malformed IDs return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a generic **500** without exposing filesystem paths or internal exceptions.
 
+## Data quality API
+
+`GET /api/v1/datasets/{dataset_id}/quality` performs read-only checks against the original stored CSV:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/quality
+```
+
+The typed response includes `dataset_id`, `filename`, row/column counts, a dataset `summary`, ordered `column_quality`, and bounded `issues`. The summary reports missing cells, rows with one or more missing values, duplicate rows, duplicate groups, invalid date values, and potential type inconsistencies. Column summaries include Phase 3.1 inferred type, non-null and missing counts, missing percentage, and applicable invalid-date/type-inconsistency counts and percentages.
+
+Response shape:
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "filename": "sample.csv",
+  "row_count": 3,
+  "column_count": 2,
+  "summary": {
+    "total_missing_cells": 1,
+    "rows_with_missing_values": 1,
+    "duplicate_rows": 0,
+    "duplicate_groups": 0,
+    "invalid_date_values": 0,
+    "type_inconsistencies": 0
+  },
+  "column_quality": [
+    {
+      "name": "order_date",
+      "inferred_type": "date",
+      "non_null_count": 3,
+      "missing_count": 0,
+      "missing_percentage": 0.0,
+      "invalid_date_count": 0,
+      "invalid_date_percentage": 0.0,
+      "type_inconsistency_count": 0,
+      "type_inconsistency_percentage": 0.0
+    },
+    {
+      "name": "amount",
+      "inferred_type": "float",
+      "non_null_count": 2,
+      "missing_count": 1,
+      "missing_percentage": 33.33333333333333,
+      "invalid_date_count": 0,
+      "invalid_date_percentage": 0.0,
+      "type_inconsistency_count": 0,
+      "type_inconsistency_percentage": 0.0
+    }
+  ],
+  "issues": []
+}
+```
+
+Empty and whitespace-only fields are missing. `0`, `False`, and literal `N/A` are retained as values. Duplicate rows compare every parsed data field; a row repeated three times contributes two duplicate rows and one duplicate group. Repeated values in individual columns alone are not duplicates. Duplicate detection uses collision-resistant row fingerprints. Potential numeric/text inconsistency is reported when at least five values are numeric and at least 80% of non-missing values match that pattern; integer values with leading zeros and identifier columns ending in `id`, `identifier`, or `uuid` are excluded. Mixed boolean spellings are flagged when at least five values use recognized boolean tokens and both `true`/`false` and `yes`/`no` vocabularies appear. Date-like columns use Phase 3.1's supported explicit formats; valid values from other supported date formats are not counted as invalid. Invalid non-empty date values are reported separately from missing values.
+
+Issue examples are capped by `DATA_QUALITY_SAMPLE_LIMIT`, default 5 and configurable from 0 through 20; each returned example is limited to 200 characters. Duplicate counts use the “beyond the first occurrence” convention. Duplicate detection stores fixed-size BLAKE2 fingerprints bounded by the existing 100,000-row limit; an astronomically unlikely fingerprint collision could affect a count.
+
+Analysis is one streaming validation pass and does not use pandas, rewrite the CSV, persist results, or return unrestricted dataset contents. Findings indicate potential quality concerns, not automatic corrections or guarantees of invalid data. Malformed IDs return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a generic **500** without filesystem paths or internal exceptions.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -306,6 +368,12 @@ Run only the statistical profile tests with:
 
 ```bash
 pytest tests/test_dataset_statistics.py
+```
+
+Run only the data quality tests with:
+
+```bash
+pytest tests/test_dataset_quality.py
 ```
 
 Run only the storage tests with:

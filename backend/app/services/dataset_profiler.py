@@ -105,7 +105,7 @@ class _ColumnProfile:
         self.boolean_values.add(normalized)
 
     def _inspect_date(self, value: str) -> None:
-        possible_formats = _date_formats(value)
+        possible_formats = date_formats_for_value(value)
         if self.date_formats is None:
             self.date_formats = possible_formats
         else:
@@ -165,7 +165,7 @@ class _ColumnProfile:
         )
 
 
-def _date_formats(value: str) -> set[str]:
+def date_formats_for_value(value: str) -> set[str]:
     """Return valid, explicit formats; ambiguous slash dates retain both orders."""
     if _ISO_DATE_PATTERN.fullmatch(value):
         try:

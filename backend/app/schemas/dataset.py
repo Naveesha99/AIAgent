@@ -113,3 +113,57 @@ class DatasetStatisticsResponse(BaseModel):
     row_count: int
     column_count: int
     column_statistics: list[DatasetColumnStatistics]
+
+
+class DatasetColumnQuality(BaseModel):
+    """Missing-value and type-related quality metrics for one column."""
+
+    name: str
+    inferred_type: DatasetLogicalType
+    non_null_count: int
+    missing_count: int
+    missing_percentage: float
+    invalid_date_count: int = 0
+    invalid_date_percentage: float = 0.0
+    type_inconsistency_count: int = 0
+    type_inconsistency_percentage: float = 0.0
+
+
+class DataQualitySummary(BaseModel):
+    """Dataset-wide counts of detected quality issues."""
+
+    total_missing_cells: int
+    rows_with_missing_values: int
+    duplicate_rows: int
+    duplicate_groups: int
+    invalid_date_values: int
+    type_inconsistencies: int
+
+
+class DataQualityIssue(BaseModel):
+    """One concise, bounded report of a dataset quality issue."""
+
+    category: Literal[
+        "missing_values",
+        "duplicate_rows",
+        "invalid_dates",
+        "type_inconsistency",
+    ]
+    severity: Literal["info", "warning"]
+    column: Optional[str] = None
+    count: int
+    percentage: Optional[float] = None
+    description: str
+    sample_values: list[str] = Field(default_factory=list)
+
+
+class DatasetQualityResponse(BaseModel):
+    """Read-only data quality findings for a stored CSV dataset."""
+
+    dataset_id: UUID
+    filename: str
+    row_count: int
+    column_count: int
+    summary: DataQualitySummary
+    column_quality: list[DatasetColumnQuality]
+    issues: list[DataQualityIssue]
