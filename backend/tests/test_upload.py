@@ -293,6 +293,7 @@ def test_storage_failure_does_not_return_success_or_leave_partial_file(
     def fail_finalize(
         storage: DatasetStorage,
         staged: object,
+        filename: str,
     ) -> object:
         raise DatasetStorageError("simulated storage failure")
 
