@@ -6,7 +6,7 @@ import codecs
 import csv
 import threading
 from dataclasses import dataclass
-from typing import BinaryIO, Iterator, Literal, Optional
+from typing import BinaryIO, Callable, Iterator, Literal, Optional
 
 from app.core.config import Settings
 
@@ -106,8 +106,9 @@ def validate_csv(
     *,
     preview_page: Optional[int] = None,
     preview_page_size: Optional[int] = None,
+    row_consumer: Optional[Callable[[tuple[str, ...]], None]] = None,
 ) -> CsvValidationResult:
-    """Validate CSV and optionally retain only one bounded preview page."""
+    """Validate CSV and optionally retain a page or consume each data row."""
     if (preview_page is None) != (preview_page_size is None):
         raise ValueError("Both preview pagination values must be supplied together.")
     if preview_page is not None and preview_page < 1:
@@ -176,6 +177,8 @@ def validate_csv(
                             "The CSV exceeds the maximum number of data rows allowed.",
                             resource_limit=True,
                         )
+                    if row_consumer is not None:
+                        row_consumer(tuple(row))
                     if (
                         first_preview_row is not None
                         and preview_page_size is not None

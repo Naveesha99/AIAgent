@@ -161,6 +161,72 @@ curl "http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12
 
 The API scans the stored CSV to validate it, count logical data rows, and collect only the requested page. Consequently, later pages still require a bounded-memory scan of the file. Invalid IDs or pagination values return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a safe **500** response. The preview endpoint does not expose storage paths or file contents beyond the requested page.
 
+## Dataset metadata API
+
+`GET /api/v1/datasets/{dataset_id}/metadata` scans a stored CSV and returns its row count, ordered columns, missing-value counts, and inferred logical types:
+
+```bash
+curl http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/metadata
+```
+
+Example response:
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "filename": "sample.csv",
+  "row_count": 3,
+  "column_count": 3,
+  "columns": [
+    {
+      "name": "order_id",
+      "data_type": "string",
+      "non_null_count": 3,
+      "null_count": 0,
+      "is_numeric": false,
+      "is_date": false,
+      "is_categorical": false
+    },
+    {
+      "name": "quantity",
+      "data_type": "integer",
+      "non_null_count": 3,
+      "null_count": 0,
+      "is_numeric": true,
+      "is_date": false,
+      "is_categorical": false
+    },
+    {
+      "name": "region",
+      "data_type": "categorical",
+      "non_null_count": 2,
+      "null_count": 1,
+      "is_numeric": false,
+      "is_date": false,
+      "is_categorical": true
+    }
+  ],
+  "numeric_columns": ["quantity"],
+  "date_columns": [],
+  "categorical_columns": ["region"]
+}
+```
+
+Supported logical types are `integer`, `float`, `boolean`, `date`, `datetime`, `categorical`, and `string`. The ordered `columns` list contains each header exactly once. `numeric_columns`, `date_columns`, and `categorical_columns` are derived in that same order; booleans are not numeric and datetimes are included in `date_columns`.
+
+Inference is deterministic and conservative:
+
+- Empty CSV cells count as null; all other cells count as non-null. Blank records are handled the same way as upload and preview validation and are excluded from the data row count. An empty or entirely missing column is typed as `string`.
+- Integer and finite decimal/exponent values are numeric. A column is numeric only when every non-empty value matches; digit-only values with leading zeros (such as `00123`) remain strings. Columns whose final name component is `id`, `identifier`, or `uuid` remain strings even when their values are numeric. NaN/Infinity tokens and values that overflow finite floating-point parsing are not inferred as numeric.
+- ISO dates and datetimes are recognized, as are slash- or dash-separated day/month/year formats when the order can be established from a value such as `13/02/2025`. Ambiguous dates such as `01/02/2025` alone remain strings. Values must consistently match the same recognized date format.
+- Boolean inference recognizes case-insensitive `true`/`false` or `yes`/`no` when the column uses only one of those pairs and contains both values.
+- Categorical inference excludes numeric, date, and boolean fields. It requires at least five non-empty cells, at most 50 distinct short values, no more than half as many distinct values as non-empty cells, and repeated values. The distinct-value threshold is also limited by the square root of the number of non-empty cells, with a minimum of five.
+- Other columns are `string`; CSV values are never rewritten.
+
+The endpoint uses the same strict, bounded CSV validator as upload and preview, including its configured upload, row, column, field, and physical-line limits. It performs one streaming pass and retains only bounded per-column inference state; it does not persist metadata. Type inference is heuristic, not a guarantee of semantic correctness. Column-name rules may not recognize every identifier naming convention, and text values that happen to satisfy a recognized date format can still be ambiguous.
+
+Malformed IDs return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a generic **500** without exposing filesystem paths or parser internals.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -173,6 +239,12 @@ Tests use FastAPI's in-process test client and isolated temporary storage direct
 
 ```bash
 pytest tests/test_dataset_preview.py
+```
+
+Run only the metadata tests with:
+
+```bash
+pytest tests/test_dataset_metadata.py
 ```
 
 Run only the storage tests with:
