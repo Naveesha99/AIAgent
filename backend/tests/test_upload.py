@@ -35,6 +35,20 @@ def upload_limit() -> Iterator[Callable[[int], None]]:
     app.dependency_overrides.pop(get_settings, None)
 
 
+@pytest.fixture
+def csv_settings() -> Iterator[Callable[..., None]]:
+    """Override CSV validation settings without modifying process environment."""
+
+    def set_settings(**values: int) -> None:
+        app.dependency_overrides[get_settings] = lambda: Settings(
+            _env_file=None,
+            **values,
+        )
+
+    yield set_settings
+    app.dependency_overrides.pop(get_settings, None)
+
+
 def test_upload_accepts_csv_and_returns_declared_schema() -> None:
     contents = b"name,value\nalpha,1\n"
 
@@ -118,13 +132,114 @@ def test_upload_rejects_whitespace_filename() -> None:
     assert response.json()["detail"] == "A non-empty CSV filename is required."
 
 
+@pytest.mark.parametrize(
+    ("contents", "expected_encoding", "expected_columns", "expected_rows"),
+    [
+        (b"name,value\nalpha,1\n", "utf-8", 2, 1),
+        (b"\xef\xbb\xbfname,value\nalpha,1\n", "utf-8-sig", 2, 1),
+        (
+            b'name,value\n"alpha, beta","say ""hello"""\n',
+            "utf-8",
+            2,
+            1,
+        ),
+        (
+            b'name,value\nalpha,"first line\nsecond line"\n',
+            "utf-8",
+            2,
+            1,
+        ),
+        ("café,値\n東京,naïve\n".encode("utf-8"), "utf-8", 2, 1),
+    ],
+)
+def test_csv_validator_accepts_valid_utf8_csv(
+    contents: bytes,
+    expected_encoding: str,
+    expected_columns: int,
+    expected_rows: int,
+) -> None:
+    from app.services.csv_validator import validate_csv
+
+    result = validate_csv(BytesIO(contents), Settings(_env_file=None))
+
+    assert result.encoding == expected_encoding
+    assert result.column_count == expected_columns
+    assert result.data_row_count == expected_rows
+    assert len(result.column_names) == expected_columns
+
+
+@pytest.mark.parametrize(
+    ("contents", "message"),
+    [
+        (b"", "The CSV file is empty."),
+        (b" \t\r\n", "CSV header names must be non-empty."),
+        (b"name,value\n", "at least one non-empty data row"),
+        (b",value\n1,2\n", "header names must be non-empty"),
+        (b"name,name\n1,2\n", "duplicate column names"),
+        (b"\xff\xfe\x00\x00", "valid UTF-8 encoding"),
+        (b"a,b\n1,2\n\"unterminated", "syntax is malformed"),
+        (b"a,b\n1\n", "different number of fields"),
+        (b"a,b\n1,2,3\n", "different number of fields"),
+        (b"binary\x00,data\n1,2\n", "unsupported binary data"),
+    ],
+)
+def test_csv_validator_rejects_invalid_csv(
+    contents: bytes,
+    message: str,
+) -> None:
+    from app.services.csv_validator import CsvValidationError, validate_csv
+
+    with pytest.raises(CsvValidationError, match=message):
+        validate_csv(BytesIO(contents), Settings(_env_file=None))
+
+
+def test_upload_rejects_invalid_csv_without_echoing_contents() -> None:
+    private_data = b"private-row-value"
+    response = client.post(
+        "/api/v1/datasets/upload",
+        files={
+            "file": (
+                "sample.csv",
+                b"name,value\n" + private_data + b"\n",
+                "text/csv",
+            )
+        },
+    )
+
+    assert response.status_code == 400
+    assert "private-row-value" not in response.text
+    assert "Traceback" not in response.text
+    assert "backend/" not in response.text
+
+
+def test_upload_closes_file_after_csv_validation_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_close = StarletteUploadFile.close
+    closed_uploads: list[StarletteUploadFile] = []
+
+    async def track_close(upload: StarletteUploadFile) -> None:
+        closed_uploads.append(upload)
+        await original_close(upload)
+
+    monkeypatch.setattr(StarletteUploadFile, "close", track_close)
+    response = client.post(
+        "/api/v1/datasets/upload",
+        files={"file": ("bad.csv", b"a,b\n1\n", "text/csv")},
+    )
+
+    assert response.status_code == 400
+    assert closed_uploads
+    assert all(upload.file.closed for upload in closed_uploads)
+
+
 @pytest.mark.parametrize("size_bytes", [7, 8])
 def test_upload_accepts_file_at_or_below_limit(
     size_bytes: int,
     upload_limit: Callable[[int], None],
 ) -> None:
     upload_limit(8)
-    contents = b"x" * size_bytes
+    contents = b"a\n1" + b" " * (size_bytes - 4) + b"\n"
 
     response = client.post(
         "/api/v1/datasets/upload",
@@ -157,6 +272,81 @@ def test_upload_size_defaults_to_10_mib() -> None:
     assert settings.max_upload_size_bytes == 10 * 1024 * 1024
 
 
+def test_csv_validation_limits_have_expected_defaults() -> None:
+    settings = Settings(_env_file=None)
+
+    assert settings.max_csv_columns == 200
+    assert settings.max_csv_rows == 100_000
+    assert settings.max_csv_field_size == 1024 * 1024
+    assert settings.max_csv_validation_lines == 200_000
+
+
+def test_csv_field_size_limit_is_restored_after_validation_failure() -> None:
+    import csv
+
+    from app.services.csv_validator import CsvValidationError, validate_csv
+
+    original_limit = csv.field_size_limit()
+    settings = Settings(_env_file=None, max_csv_field_size=4)
+
+    with pytest.raises(CsvValidationError):
+        validate_csv(BytesIO(b"a\n12345\n"), settings)
+
+    assert csv.field_size_limit() == original_limit
+
+
+@pytest.mark.parametrize(
+    ("setting", "contents", "expected_detail"),
+    [
+        ("max_csv_columns", b"a,b,c\n1,2,3\n", "maximum number of columns"),
+        ("max_csv_rows", b"a\n1\n2\n", "maximum number of data rows"),
+        ("max_csv_field_size", b"a\n123456789\n", "maximum field size"),
+        (
+            "max_csv_validation_lines",
+            b"a\n1\n2\n",
+            "maximum number of lines",
+        ),
+    ],
+)
+def test_csv_resource_limits_return_413(
+    setting: str,
+    contents: bytes,
+    expected_detail: str,
+    csv_settings: Callable[..., None],
+) -> None:
+    limit = {
+        "max_csv_columns": 2,
+        "max_csv_rows": 1,
+        "max_csv_field_size": 8,
+        "max_csv_validation_lines": 2,
+    }[setting]
+    csv_settings(**{setting: limit})
+
+    response = client.post(
+        "/api/v1/datasets/upload",
+        files={"file": ("sample.csv", contents, "text/csv")},
+    )
+
+    assert response.status_code == 413
+    assert expected_detail in response.json()["detail"]
+
+
+def test_column_limit_is_checked_before_csv_reader_builds_a_wide_row() -> None:
+    from app.services.csv_validator import (
+        CsvValidationError,
+        _ValidationLines,
+    )
+
+    lines = _ValidationLines(
+        iter([",".join([""] * 100_000) + "\n"]),
+        max_columns=3,
+        max_validation_lines=10,
+    )
+
+    with pytest.raises(CsvValidationError, match="maximum number of columns"):
+        next(lines)
+
+
 @pytest.mark.parametrize(
     "status_code",
     [201, 400, 413],
@@ -183,7 +373,7 @@ def test_uploaded_file_is_closed_after_success_and_failure(
         contents = b"invalid extension"
     else:
         filename = "sample.csv"
-        contents = b"ok"
+        contents = b"value\nok\n"
 
     response = client.post(
         "/api/v1/datasets/upload",

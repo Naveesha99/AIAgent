@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     api_host: str = "127.0.0.1"
     api_port: int = Field(default=8000, ge=1, le=65535)
     max_upload_size_bytes: int = Field(default=10 * 1024 * 1024, gt=0)
+    max_csv_columns: int = Field(default=200, gt=0)
+    max_csv_rows: int = Field(default=100_000, gt=0)
+    max_csv_field_size: int = Field(default=1024 * 1024, gt=0)
+    max_csv_validation_lines: int = Field(default=200_000, gt=0)
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000"
     )
