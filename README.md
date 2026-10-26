@@ -4,14 +4,14 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 3.4 — Reusable analytics service.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. Natural-language questions, LLM integration, charts, and agent orchestration are not implemented.
+**Phase 4.1 — AI provider configuration (Google Gemini).** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interface now supports Google Gemini through environment configuration, but no endpoint sends dataset contents to a model yet. Natural-language processing, pandas code generation, charts, and agent orchestration are not implemented.
 
 ## Planned technology stack
 
 - **Frontend:** Next.js, TypeScript, and Tailwind CSS
 - **Backend:** Python and FastAPI
 - **Data analysis:** Python and pandas
-- **Language model:** Provider and model to be selected/configured during a later phase
+- **Language model:** Google Gemini through the official `google-genai` Python SDK, behind a provider-independent client interface
 
 ## Repository layout
 
@@ -87,7 +87,7 @@ See the frontend and backend READMEs for environment setup and platform-specific
 
 ## Environment configuration
 
-`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS`; backend settings come from process environment variables, and the example file is not loaded automatically. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
+`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS` and the optional Gemini provider settings. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. `GEMINI_API_KEY` is backend-only and is not required for health, upload, profiling, quality, or analytics; see the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
 
 ## Integration troubleshooting
 

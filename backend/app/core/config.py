@@ -2,10 +2,13 @@
 
 from functools import lru_cache
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
-from pydantic import Field
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
 
 
 class Settings(BaseSettings):
@@ -34,6 +37,27 @@ class Settings(BaseSettings):
     cors_origins: str = (
         "http://localhost:3000,http://127.0.0.1:3000"
     )
+    llm_provider: str = Field(default="gemini", min_length=1)
+    llm_model: str = Field(default="gemini-3.5-flash-lite", min_length=1)
+    gemini_api_key: Optional[SecretStr] = None
+    llm_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
+    llm_max_retries: int = Field(default=2, ge=0, le=5)
+
+    @field_validator("llm_provider", mode="before")
+    @classmethod
+    def normalize_llm_provider(cls, value: object) -> object:
+        """Normalize the provider name so environment values are case-insensitive."""
+        if isinstance(value, str):
+            return value.strip().lower()
+        return value
+
+    @field_validator("llm_model", mode="before")
+    @classmethod
+    def normalize_llm_model(cls, value: object) -> object:
+        """Reject surrounding whitespace in configured model identifiers."""
+        if isinstance(value, str):
+            return value.strip()
+        return value
 
     @property
     def allowed_origins(self) -> list[str]:
@@ -47,5 +71,5 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    """Return the cached application settings."""
-    return Settings()
+    """Return cached settings, loading backend/.env when present."""
+    return Settings(_env_file=BACKEND_ENV_FILE)

@@ -2,6 +2,8 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. The client is configured from environment variables but is not wired into any endpoint yet, so CSV upload, profiling, data quality, and analytics never send data to Gemini.
+
 ## Requirements
 
 - Python 3.9 or later
@@ -40,7 +42,13 @@ The `dev` extra includes pytest and the HTTP client used by FastAPI's in-process
 
 ## Configure the backend
 
-`backend/.env.example` contains safe backend defaults, including `CORS_ORIGINS`, a comma-separated list of browser origins allowed to access the API. The defaults allow `http://localhost:3000` and `http://127.0.0.1:3000`. CORS does not allow credentials. Settings are read from process environment variables; the example file is not loaded automatically. Set the values in your shell or copy them into your local environment setup. For example, on macOS/Linux:
+`backend/.env.example` contains safe backend defaults, including `CORS_ORIGINS`, a comma-separated list of browser origins allowed to access the API. The defaults allow `http://localhost:3000` and `http://127.0.0.1:3000`. CORS does not allow credentials. Create a local `backend/.env` from the example, which is ignored by Git and loaded automatically when present:
+
+```bash
+cp .env.example .env
+```
+
+Process environment variables take precedence over values in `backend/.env`. The example file itself is not loaded automatically. Set local values in `backend/.env` or export them in your shell. The example also lists the optional Gemini provider settings described below. For example, on macOS/Linux:
 
 ```bash
 export APP_ENV=development
@@ -58,6 +66,11 @@ export ANALYTICS_MAX_GROUPS=100
 export ANALYTICS_MAX_VALUE_FREQUENCIES=10
 export DATASET_STORAGE_DIR=data/datasets
 export DATASET_TTL_HOURS=24
+export LLM_PROVIDER=gemini
+export LLM_MODEL=gemini-3.5-flash-lite
+export GEMINI_API_KEY=your-api-key-from-google-ai-studio
+export LLM_TIMEOUT_SECONDS=30
+export LLM_MAX_RETRIES=2
 ```
 
 On Windows PowerShell:
@@ -78,6 +91,11 @@ $env:ANALYTICS_MAX_GROUPS = "100"
 $env:ANALYTICS_MAX_VALUE_FREQUENCIES = "10"
 $env:DATASET_STORAGE_DIR = "data/datasets"
 $env:DATASET_TTL_HOURS = "24"
+$env:LLM_PROVIDER = "gemini"
+$env:LLM_MODEL = "gemini-3.5-flash-lite"
+$env:GEMINI_API_KEY = "your-api-key-from-google-ai-studio"
+$env:LLM_TIMEOUT_SECONDS = "30"
+$env:LLM_MAX_RETRIES = "2"
 ```
 
 `APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `ANALYTICS_MAX_RESULT_ROWS` defaults to 1000 and caps filter/sort result rows. `ANALYTICS_MAX_GROUPS` defaults to 100 and caps returned groups. `ANALYTICS_MAX_VALUE_FREQUENCIES` defaults to 10 and caps categorical top values in summaries. `DATASET_STORAGE_DIR` defaults to `backend/data/datasets`; a relative override is resolved relative to the backend directory. `DATASET_TTL_HOURS` defaults to 24 hours. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
@@ -88,7 +106,86 @@ uvicorn app.main:app --reload --host "$API_HOST" --port "$API_PORT"
 
 In Windows PowerShell, use `$env:API_HOST` and `$env:API_PORT` in the Uvicorn command instead.
 
-Do not put credentials in this example file. No secrets are required by the backend at this stage.
+Do not put credentials in `backend/.env.example` or commit a local environment file. A Gemini API key is needed only when an application service constructs the Gemini client; the existing health, upload, preview, metadata, statistics, quality, and analytics endpoints do not use an LLM key.
+
+## Configure the Google Gemini provider
+
+Phase 4.1 provides a provider-independent client interface under `app/services/llm/`. The factory selects the provider from `LLM_PROVIDER`, and only the Gemini implementation is supported in this phase. Constructing the client does not send a request or consume API quota. Actual `generate` calls are not wired to any API endpoint yet.
+
+### Obtain an API key
+
+1. Open [Google AI Studio](https://aistudio.google.com/) and sign in.
+2. Select or create the Google Cloud project that should own the API usage.
+3. Use the API key controls in AI Studio to create a key for that project.
+4. Store the key only in the backend process environment or an untracked local environment file. Never put it in frontend variables such as `NEXT_PUBLIC_*`, source code, test fixtures, documentation, or Git.
+
+### Configure the provider
+
+```bash
+export LLM_PROVIDER=gemini
+export LLM_MODEL=gemini-3.5-flash-lite
+export GEMINI_API_KEY="your-api-key-from-google-ai-studio"
+export LLM_TIMEOUT_SECONDS=30
+export LLM_MAX_RETRIES=2
+```
+
+Windows PowerShell:
+
+```powershell
+$env:LLM_PROVIDER = "gemini"
+$env:LLM_MODEL = "gemini-3.5-flash-lite"
+$env:GEMINI_API_KEY = "your-api-key-from-google-ai-studio"
+$env:LLM_TIMEOUT_SECONDS = "30"
+$env:LLM_MAX_RETRIES = "2"
+```
+
+Defaults and validation:
+
+- `LLM_PROVIDER` defaults to `gemini`; names are case-insensitive. Any other provider is rejected with a clear `LLMConfigurationError` when the client is requested. Keep the provider abstraction when adding another implementation.
+- `LLM_MODEL` defaults to `gemini-3.5-flash-lite`, a free-tier-eligible model at the time of writing. A missing or blank model is rejected.
+- `GEMINI_API_KEY` has no default and must be non-blank when the Gemini client is constructed. It is held as a secret and is not included in settings representations.
+- `LLM_TIMEOUT_SECONDS` defaults to `30` and must be greater than `0` and at most `600`. The timeout is applied both to the SDK HTTP request and to the asynchronous call.
+- `LLM_MAX_RETRIES` defaults to `2` and must be between `0` and `5`. It counts retries after the initial attempt; `2` allows at most three attempts.
+
+### Choose an available model
+
+Google changes model availability, free-tier eligibility, and rate limits. The default model is only a starting point:
+
+- Check the [Gemini models list](https://ai.google.dev/gemini-api/docs/models), [pricing and free tier](https://ai.google.dev/gemini-api/docs/pricing), and [rate limits](https://ai.google.dev/gemini-api/docs/rate-limits) for the current project and region.
+- Use a model ID shown by Google's documentation or AI Studio. At the time of writing, Google recommends newer models such as `gemini-3.5-flash-lite` and `gemini-3.8-flash` for new projects; older 2.5 models may have restricted access.
+- Set `LLM_MODEL` to the selected ID. No source-code change is required.
+- Do not assume every model has free-tier access. Confirm eligibility for your project, region, and usage before relying on it.
+
+A model that is unavailable to the project maps to `LLMModelUnavailableError` rather than being retried.
+
+### Timeouts, retries, and errors
+
+Provider-specific SDK errors are converted to internal exceptions that do not include credentials or raw response data:
+
+- `LLMAuthenticationError` and `LLMPermissionError` cover rejected credentials and denied access. They are not retried.
+- `LLMModelUnavailableError` covers unsupported or unavailable models. It is not retried.
+- `LLMInvalidRequestError` covers malformed requests and other non-retryable client errors. It is not retried.
+- `LLMRateLimitError` represents a rate limit. The client retries a bounded number of times and respects `Retry-After` or provider `RetryInfo` guidance when present.
+- `LLMQuotaExceededError` represents exhausted quota or billing limits. It is not retried.
+- `LLMTimeoutError` and `LLMConnectionError` cover timeouts and network failures and are retried within the configured limit.
+- `LLMTransientError` covers temporary server failures and is retried with exponential backoff.
+- `LLMResponseError` covers empty or malformed provider responses and is not retried.
+- `LLMProviderError` covers unexpected provider failures that cannot be classified safely.
+
+The retry delay starts at 0.5 seconds, doubles per retry, and is capped at 30 seconds. Provider retry guidance is also capped by that bound, so retries never continue indefinitely.
+
+### Troubleshoot provider errors
+
+- **`GEMINI_API_KEY is required`** — set `GEMINI_API_KEY` in the backend environment and restart the backend. Confirm the value is not empty or whitespace.
+- **Authentication or permission failure** — verify the key in AI Studio, ensure it belongs to the intended project, and check API restrictions, project status, and billing. Do not print the key while debugging.
+- **Model unavailable** — confirm the exact `LLM_MODEL` identifier is available to the project. Switch to a currently listed model. Model access and free-tier eligibility depend on Google's current rollout.
+- **Rate limit** — the client retries within the configured limit and honors provider guidance. Reduce request frequency or check the project's rate limits if failures continue.
+- **Quota exhausted** — quota failures are not retried. Check AI Studio quotas and billing, wait for the quota window to reset, or use a project with available quota.
+- **Timeout** — increase `LLM_TIMEOUT_SECONDS` within the allowed range, check network connectivity, and verify the model is responsive. Timeouts are retried only within `LLM_MAX_RETRIES`.
+- **Connection failure** — check outbound network access, DNS, proxy, and firewall settings.
+- **Malformed response** — the provider returned no usable text or an unexpected structure. Retry manually, confirm the model ID, and inspect provider status.
+
+API keys and request content are not logged or included in safe error messages. Keep all Gemini configuration on the backend.
 
 ## Run the development server
 
@@ -522,7 +619,27 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Run only the preview tests with:
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. The Phase 4.1 tests inject fake Gemini clients and mocked SDK outcomes, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+
+Run only the Gemini configuration and provider-selection tests with:
+
+```bash
+pytest tests/test_phase41_llm_config.py
+```
+
+Run only the mocked Gemini client, error, and retry tests with:
+
+```bash
+pytest tests/test_phase41_gemini_client.py
+```
+
+Run only the regression tests that exercise health, upload, profiling, quality, and analytics without Gemini configuration with:
+
+```bash
+pytest tests/test_phase41_without_gemini.py
+```
+
+Run only the preview tests with:
 
 ```bash
 pytest tests/test_dataset_preview.py
