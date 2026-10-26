@@ -2,7 +2,7 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
-Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. The client is configured from environment variables but is not wired into any endpoint yet, so CSV upload, profiling, data quality, and analytics never send data to Gemini.
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. The question endpoint sends bounded schema and aggregate statistics, never full CSV contents or raw row values, and it does not execute generated code or calculate the requested answer. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
 
 ## Requirements
 
@@ -106,11 +106,11 @@ uvicorn app.main:app --reload --host "$API_HOST" --port "$API_PORT"
 
 In Windows PowerShell, use `$env:API_HOST` and `$env:API_PORT` in the Uvicorn command instead.
 
-Do not put credentials in `backend/.env.example` or commit a local environment file. A Gemini API key is needed only when an application service constructs the Gemini client; the existing health, upload, preview, metadata, statistics, quality, and analytics endpoints do not use an LLM key.
+Do not put credentials in `backend/.env.example` or commit a local environment file. A Gemini API key is required only for the natural-language question endpoint, which constructs the configured LLM client. Health, upload, preview, metadata, statistics, quality, and analytics do not use an LLM key.
 
 ## Configure the Google Gemini provider
 
-Phase 4.1 provides a provider-independent client interface under `app/services/llm/`. The factory selects the provider from `LLM_PROVIDER`, and only the Gemini implementation is supported in this phase. Constructing the client does not send a request or consume API quota. Actual `generate` calls are not wired to any API endpoint yet.
+Phase 4.1 provides a provider-independent client interface under `app/services/llm/`. The factory selects the provider from `LLM_PROVIDER`, and only the Gemini implementation is supported. Constructing the client does not send a request or consume API quota. The natural-language question endpoint uses `generate`; all other endpoints remain LLM-free.
 
 ### Obtain an API key
 
@@ -611,6 +611,94 @@ Analytics never modifies the stored CSV. Filtering without sorting streams rows 
 
 Malformed dataset IDs and invalid request parameters return **422**. Missing or expired datasets return **404**. Unreadable or corrupted stored data returns a generic **500** without filesystem paths or parser internals.
 
+## Natural-language question API
+
+`POST /api/v1/datasets/{dataset_id}/questions` asks Gemini to interpret a question against a stored dataset. It requires `GEMINI_API_KEY` and the other provider settings described above.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/questions \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Which product had the highest quantity sold?"}'
+```
+
+The request body contains exactly one field: `question`, stripped of surrounding whitespace and limited to 1–2,000 characters.
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "question": "Which product had the highest quantity sold?",
+  "status": "interpreted",
+  "interpretation": {
+    "question": "Which product had the highest quantity sold?",
+    "intent": "group_and_aggregate",
+    "referenced_columns": ["product", "quantity"],
+    "requested_metrics": [
+      {
+        "name": "total quantity",
+        "column": "quantity",
+        "aggregation": "sum",
+        "supported": true,
+        "limitation": null
+      }
+    ],
+    "group_by": ["product"],
+    "filters": null,
+    "sort": {"column": "total quantity", "direction": "desc"},
+    "limit": 1,
+    "clarification_question": null,
+    "assumptions": []
+  },
+  "clarification_question": null,
+  "warnings": []
+}
+```
+
+`status` is either `interpreted` or `clarification_needed`. Supported intents are `filter`, `group_and_aggregate`, `aggregate`, `sort`, `compare`, `summarize`, `clarification_needed`, and `unsupported`.
+
+The endpoint does not calculate or return the requested result. It performs no pandas execution, code generation, SQL execution, filesystem access by the model, chart generation, persistence, conversation history, or streaming. A later phase is expected to plan and execute the validated interpretation.
+
+### Model context and privacy
+
+The model receives:
+
+- The user's question as untrusted JSON data.
+- Row and column counts.
+- Columns in their original order with inferred type and classification.
+- Non-null and missing counts with missing percentages.
+- Earliest and latest values for date and datetime columns.
+- Numeric, date, and categorical column lists.
+- Up to 10 missing-value warnings and a truncation flag.
+
+The context excludes filenames, storage paths, raw row records, and general cell values. It is limited to 48,000 serialized characters; a larger metadata representation is rejected with **422** instead of being truncated unsafely. Prompt instructions tell the model to treat the metadata and question as untrusted data, never calculate the answer or invent columns, and return only strict JSON.
+
+### Validation and limitations
+
+The model's JSON is parsed strictly. Missing `intent`, unknown fields, invalid enum values, malformed JSON, and other schema violations return a controlled **502**; raw model output is not echoed. A single surrounding JSON code fence is accepted.
+
+The interpretation is then checked against the actual dataset schema:
+
+- Unknown columns are retained in the interpretation but flagged; similar column names are never substituted.
+- Incomplete operations, such as grouping without group columns or metrics, require clarification.
+- Aggregations that need a non-numeric column are marked unsupported.
+- Derived metrics that existing analytics cannot perform, such as revenue requiring a multiplication or rows with any missing value, are marked with `supported: false` and an explicit limitation.
+- Direct row counts and simple metrics over known columns are marked supported.
+- Model assumptions are returned as warnings. The model is told not to assume discount treatment or other business rules without sufficient information.
+- Warnings are deduplicated and capped at 20. Additional warnings are replaced by an omission notice.
+
+A clarification response still returns HTTP 200 with the structured interpretation and warnings. Unrelated questions use `unsupported`; ambiguous questions or missing details use `clarification_needed`.
+
+### Question endpoint errors
+
+- **422** — malformed dataset ID, missing/blank/oversized question, extra request fields, or metadata too large for safe model context.
+- **404** — missing or expired dataset.
+- **429** — provider rate limit or exhausted quota. `Retry-After` is included when the provider supplies a finite delay.
+- **502** — invalid model interpretation, rejected credentials, unavailable model, invalid provider request, or other provider response failure.
+- **503** — missing provider configuration or a temporary provider connection/transient failure.
+- **504** — provider timeout.
+- **500** — stored data cannot be read safely. Error details do not expose filesystem paths, parser internals, credentials, prompts, or raw provider responses.
+
+The endpoint does not log API keys, prompts, or request content.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -619,7 +707,13 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. The Phase 4.1 tests inject fake Gemini clients and mocked SDK outcomes, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1 and 4.2 tests inject fake Gemini clients and mocked SDK outcomes, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+
+Run only the natural-language question tests with:
+
+```bash
+pytest tests/test_phase42_questions.py
+```
 
 Run only the Gemini configuration and provider-selection tests with:
 

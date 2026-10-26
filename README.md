@@ -4,7 +4,7 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 4.1 — AI provider configuration (Google Gemini).** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interface now supports Google Gemini through environment configuration, but no endpoint sends dataset contents to a model yet. Natural-language processing, pandas code generation, charts, and agent orchestration are not implemented.
+**Phase 4.2 — Natural-language question interpretation (Google Gemini).** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interprets natural-language questions from bounded schema and aggregate statistics, without sending full CSV contents or raw row values, and returns a validated structured interpretation with clarifications and limitations. It does not calculate results, execute generated code, generate charts, or orchestrate an agent yet.
 
 ## Planned technology stack
 
@@ -87,7 +87,7 @@ See the frontend and backend READMEs for environment setup and platform-specific
 
 ## Environment configuration
 
-`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS` and the optional Gemini provider settings. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. `GEMINI_API_KEY` is backend-only and is not required for health, upload, profiling, quality, or analytics; see the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
+`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS` and the optional Gemini provider settings. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. `GEMINI_API_KEY` is backend-only and is required only for natural-language question interpretation; health, upload, profiling, quality, and analytics do not use it. See the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
 
 ## Integration troubleshooting
 
@@ -125,7 +125,8 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 12. **Phase 3.2 — Statistical profiling:** return descriptive statistics for stored datasets. (Complete.)
 13. **Phase 3.3 — Data quality analysis:** report missing values, duplicates, invalid dates, and type inconsistencies. (Complete.)
 14. **Phase 3.4 — Reusable analytics service:** support filtering, sorting, grouping, aggregation, and summarization. (Complete.)
-15. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
-16. **Reliability and refinement:** improve error correction, testing, and user experience.
+15. **Phase 4.2 — Natural-language question interpretation:** interpret questions from bounded dataset metadata and return validated structured intent, metrics, filters, assumptions, and limitations without executing analysis. (Complete.)
+16. **Question-and-answer experience:** connect validated interpretations to analysis and chart generation.
+17. **Reliability and refinement:** improve error correction, testing, and user experience.
 
 Later phases are planned only; none of their functionality is present yet. Local temporary file storage is not production dataset storage.
