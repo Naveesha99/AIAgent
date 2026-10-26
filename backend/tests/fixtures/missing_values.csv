@@ -1,0 +1,7 @@
+amount,price,order_date,region,flag,note
+0,1.5,2025-01-01,North,false,N/A
+1,,2025-01-02,South,true,
+2,3.5,,North,false,"   "
+3,4.5,2025-01-04,,true,literal
+4,5.5,2025-01-05,South,false,
+5,6.5,2025-01-06,North,true,0
