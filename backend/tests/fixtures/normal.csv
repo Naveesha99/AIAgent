@@ -1,0 +1,7 @@
+order_id,quantity,unit_price,active,order_date,region,note
+1,10,2.5,true,2025-01-01,North,alpha
+2,20,4.0,false,2025-01-02,South,beta
+3,30,6.5,true,2025-01-03,North,gamma
+4,40,8.0,false,2025-01-04,East,delta
+5,50,10.5,true,2025-01-05,South,epsilon
+6,60,12.0,false,2025-01-06,North,zeta
