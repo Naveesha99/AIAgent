@@ -7,12 +7,17 @@ import anyio
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 
 from app.core.config import Settings, get_settings
+from app.schemas.analytics import AnalyticsRequest, AnalyticsResponse
 from app.schemas.dataset import (
     DatasetMetadataResponse,
     DatasetPreviewResponse,
     DatasetQualityResponse,
     DatasetStatisticsResponse,
     DatasetUploadResponse,
+)
+from app.services.analytics_service import (
+    AnalyticsValidationError,
+    analyze_dataset,
 )
 from app.services.csv_validator import CsvValidationError, validate_csv
 from app.services.dataset_storage import (
@@ -355,6 +360,65 @@ async def quality_dataset(
             settings,
             dataset_id,
         )
+    except InvalidDatasetIdError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail="Invalid dataset identifier.",
+        ) from exc
+    except DatasetNotFoundError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Dataset not found or expired.",
+        ) from exc
+    except (CsvValidationError, DatasetStorageError, OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="The stored dataset could not be read safely.",
+        ) from exc
+
+
+@router.post(
+    "/{dataset_id}/analytics",
+    response_model=AnalyticsResponse,
+    tags=["datasets"],
+    responses={
+        status.HTTP_404_NOT_FOUND: {
+            "description": "The dataset does not exist or has expired."
+        },
+        status.HTTP_422_UNPROCESSABLE_CONTENT: {
+            "description": (
+                "The dataset identifier, operation parameters, columns, or "
+                "comparison values are invalid."
+            )
+        },
+        status.HTTP_500_INTERNAL_SERVER_ERROR: {
+            "description": "The stored dataset is unreadable or corrupted."
+        },
+    },
+)
+async def dataset_analytics(
+    dataset_id: str,
+    request: AnalyticsRequest,
+    settings: Settings = Depends(get_settings),
+) -> AnalyticsResponse:
+    """Run a validated analytics operation against a stored CSV dataset."""
+    storage = DatasetStorage(
+        settings.dataset_storage_dir,
+        ttl_hours=settings.dataset_ttl_hours,
+    )
+    try:
+        return await anyio.to_thread.run_sync(
+            analyze_dataset,
+            storage,
+            settings,
+            dataset_id,
+            request,
+        )
+    except AnalyticsValidationError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail=str(exc),
+        ) from exc
     except InvalidDatasetIdError as exc:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,

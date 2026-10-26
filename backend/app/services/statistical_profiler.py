@@ -199,6 +199,8 @@ def _column_statistics(
     non_null_count: int,
     null_count: int,
     accumulator: _ColumnStatistics,
+    *,
+    value_frequency_limit: int = _MAX_VALUE_FREQUENCIES,
 ) -> DatasetColumnStatistics:
     result = DatasetColumnStatistics(
         name=name,
@@ -220,10 +222,10 @@ def _column_statistics(
         if data_type == "categorical":
             result.value_frequencies = [
                 CategoryFrequency(value=value, count=count)
-                for value, count in ordered_frequencies[:_MAX_VALUE_FREQUENCIES]
+                for value, count in ordered_frequencies[:value_frequency_limit]
             ]
             result.value_frequencies_truncated = (
-                len(ordered_frequencies) > _MAX_VALUE_FREQUENCIES
+                len(ordered_frequencies) > value_frequency_limit
             )
     elif data_type in {"date", "datetime"}:
         result.distinct_count = len(accumulator.distinct_values)
@@ -256,8 +258,12 @@ def create_dataset_statistics(
     storage: DatasetStorage,
     settings: Settings,
     dataset_id: str,
+    *,
+    value_frequency_limit: int = _MAX_VALUE_FREQUENCIES,
 ) -> DatasetStatisticsResponse:
     """Calculate statistics in the same validated pass as type inference."""
+    if value_frequency_limit < 1:
+        raise ValueError("The value frequency limit must be positive.")
     accumulators: list[_ColumnStatistics] = []
 
     def consume_row(row: tuple[str, ...]) -> None:
@@ -280,6 +286,7 @@ def create_dataset_statistics(
             column.non_null_count,
             column.null_count,
             accumulator,
+            value_frequency_limit=value_frequency_limit,
         )
         for column, accumulator in zip(metadata.columns, accumulators)
     ]

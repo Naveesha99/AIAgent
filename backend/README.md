@@ -53,6 +53,9 @@ export MAX_CSV_ROWS=100000
 export MAX_CSV_FIELD_SIZE=1048576
 export MAX_CSV_VALIDATION_LINES=200000
 export DATA_QUALITY_SAMPLE_LIMIT=5
+export ANALYTICS_MAX_RESULT_ROWS=1000
+export ANALYTICS_MAX_GROUPS=100
+export ANALYTICS_MAX_VALUE_FREQUENCIES=10
 export DATASET_STORAGE_DIR=data/datasets
 export DATASET_TTL_HOURS=24
 ```
@@ -70,11 +73,14 @@ $env:MAX_CSV_ROWS = "100000"
 $env:MAX_CSV_FIELD_SIZE = "1048576"
 $env:MAX_CSV_VALIDATION_LINES = "200000"
 $env:DATA_QUALITY_SAMPLE_LIMIT = "5"
+$env:ANALYTICS_MAX_RESULT_ROWS = "1000"
+$env:ANALYTICS_MAX_GROUPS = "100"
+$env:ANALYTICS_MAX_VALUE_FREQUENCIES = "10"
 $env:DATASET_STORAGE_DIR = "data/datasets"
 $env:DATASET_TTL_HOURS = "24"
 ```
 
-`APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `DATASET_STORAGE_DIR` defaults to `backend/data/datasets`; a relative override is resolved relative to the backend directory. `DATASET_TTL_HOURS` defaults to 24 hours. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
+`APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `ANALYTICS_MAX_RESULT_ROWS` defaults to 1000 and caps filter/sort result rows. `ANALYTICS_MAX_GROUPS` defaults to 100 and caps returned groups. `ANALYTICS_MAX_VALUE_FREQUENCIES` defaults to 10 and caps categorical top values in summaries. `DATASET_STORAGE_DIR` defaults to `backend/data/datasets`; a relative override is resolved relative to the backend directory. `DATASET_TTL_HOURS` defaults to 24 hours. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
 
 ```bash
 uvicorn app.main:app --reload --host "$API_HOST" --port "$API_PORT"
@@ -344,6 +350,170 @@ Issue examples are capped by `DATA_QUALITY_SAMPLE_LIMIT`, default 5 and configur
 
 Analysis is one streaming validation pass and does not use pandas, rewrite the CSV, persist results, or return unrestricted dataset contents. Findings indicate potential quality concerns, not automatic corrections or guarantees of invalid data. Malformed IDs return **422**, missing or expired datasets return **404**, and unreadable/corrupted stored data returns a generic **500** without filesystem paths or internal exceptions.
 
+## Analytics API
+
+`POST /api/v1/datasets/{dataset_id}/analytics` runs one validated analytics operation against a stored CSV:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/analytics \
+  -H "Content-Type: application/json" \
+  -d '{"operation":"summarize"}'
+```
+
+The request body is a discriminated union keyed by `operation`: `filter`, `sort`, `group`, `aggregate`, or `summarize`. `filter` requires a `filters` object; the other operations may include one. Unsupported fields are rejected.
+
+### Filtering
+
+`filters` contains a `combine` value (`and`, the default, or `or`) and one or more `conditions`. Each condition has a `column`, an `operator`, and, except for null checks, a `value`.
+
+Supported operators:
+
+- Comparisons: `equals`, `not_equals`, `greater_than`, `greater_than_or_equal`, `less_than`, `less_than_or_equal`.
+- Strings: `contains`, `starts_with`, `ends_with`.
+- Null checks: `is_null`, `is_not_null`.
+
+```json
+{
+  "operation": "filter",
+  "filters": {
+    "combine": "and",
+    "conditions": [
+      {"column": "region", "operator": "equals", "value": "North"},
+      {"column": "amount", "operator": "greater_than", "value": 20}
+    ]
+  },
+  "columns": ["name", "amount"],
+  "sort_by": [{"column": "amount", "direction": "desc"}],
+  "limit": 50
+}
+```
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "operation": "filter",
+  "columns": ["name", "amount"],
+  "rows": [
+    {"name": "Zeta", "amount": "60"},
+    {"name": "Gamma", "amount": "30"}
+  ],
+  "row_count": 6,
+  "result_count": 2,
+  "truncated": false,
+  "matched_count": 2,
+  "total_groups": null,
+  "summary": null
+}
+```
+
+An empty CSV cell is null. Only `is_null` and `is_not_null` match missing values; every other operator excludes nulls, including `not_equals`. Whitespace-only cells are treated as values, not nulls.
+
+Operators are checked against the inferred column type:
+
+- `equals` and `not_equals` support numeric, string, categorical, boolean, date, and datetime columns.
+- Ordering comparisons support numeric, date, and datetime columns.
+- String operators require a string or categorical column and a string value.
+- Boolean comparisons accept booleans or case-insensitive `true`/`false` and `yes`/`no`.
+- Date values must be valid. Ambiguous values such as `01/02/2025` are rejected; use an unambiguous value such as `2025-02-01`.
+
+Numeric comparisons parse finite decimal values. Date filters compare parsed dates rather than raw text. Datetimes are compared in UTC; values without an offset are treated as UTC.
+
+### Sorting
+
+`sort_by` accepts one or more `{ "column": ..., "direction": "asc" | "desc" }` entries. Sorting is type-aware and stable: rows with equal values retain their previous order. Missing values sort after non-missing values in ascending order and before non-missing values in descending order.
+
+```json
+{
+  "operation": "sort",
+  "filters": {
+    "conditions": [
+      {"column": "region", "operator": "is_not_null"}
+    ]
+  },
+  "sort_by": [
+    {"column": "region", "direction": "asc"},
+    {"column": "amount", "direction": "desc"}
+  ],
+  "columns": ["region", "name", "amount"],
+  "limit": 100
+}
+```
+
+`columns` is an optional projection for `filter` and `sort`; it does not have to include the sort columns.
+
+### Grouping and aggregation
+
+`group` requires one or more `group_by` columns. `aggregate` accepts an optional `group_by` list. If `group` has no aggregations, it counts rows per group. An empty group value is preserved as an explicit `null` group.
+
+```json
+{
+  "operation": "group",
+  "group_by": ["region"],
+  "aggregations": [
+    {"function": "sum", "column": "amount"},
+    {"function": "count", "column": "price"},
+    {"function": "nunique", "column": "name", "alias": "unique_names"}
+  ]
+}
+```
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "operation": "group",
+  "columns": ["region", "sum_amount", "count_price", "unique_names"],
+  "rows": [
+    {"region": null, "sum_amount": 40.0, "count_price": 1, "unique_names": 1},
+    {"region": "North", "sum_amount": 100.0, "count_price": 2, "unique_names": 3},
+    {"region": "South", "sum_amount": 70.0, "count_price": 2, "unique_names": 2}
+  ],
+  "row_count": 6,
+  "result_count": 3,
+  "truncated": false,
+  "matched_count": 6,
+  "total_groups": 3,
+  "summary": null
+}
+```
+
+Groups are ordered by group key using the same type-aware ordering as sorting, with missing values first. A `group` request without aggregations counts rows per group under `count_rows`. Default aggregation aliases use `<function>_<column>`, while a `count` without a column uses `count_rows`. Group and aggregation output names are unique; `alias` can rename an aggregation. Aggregations run after filters.
+
+Aggregation semantics:
+
+- `count` counts non-null values of the specified column. When `count` has no `column`, it counts rows. This is the same in grouped and ungrouped results.
+- `nunique` counts distinct non-null values and works for any column type.
+- `sum`, `mean`, `median`, and `std` require a numeric column. `std` is the sample standard deviation and is null with fewer than two values. `sum`, `mean`, and `median` are null when no non-null numeric values remain.
+- `min` and `max` support numeric, date, datetime, string, and categorical columns. Numeric results are numbers, dates and datetimes are ISO strings, and other results are strings. Boolean columns are rejected.
+- Missing values are excluded from every aggregation. They are not converted to zero.
+
+An ungrouped `aggregate` always returns one row, even when filters match no rows; row counts are then `0` and numeric aggregations are `null`.
+
+### Summaries
+
+`summarize` returns dataset counts, ordered column names and inferred types, numeric summaries, categorical summaries, and missing-value counts. It reuses the metadata and statistical profiling logic from the metadata and statistics endpoints. `top_values_limit` controls how many categorical values are returned; it is capped by `ANALYTICS_MAX_VALUE_FREQUENCIES`.
+
+```json
+{
+  "operation": "summarize",
+  "top_values_limit": 5
+}
+```
+
+The response has an empty top-level `rows` list and a `summary` object. The summary includes `row_count`, `column_count`, `columns`, `numeric`, `categorical`, and `missing`. Numeric summaries contain `count`, `mean`, `median`, `minimum`, `maximum`, and `standard_deviation`. Categorical summaries contain `distinct_count`, bounded `top_values`, and a `truncated` flag. Missing summaries contain counts and percentages. The top-level `truncated` flag is true when any categorical top-value list or grouped summary was truncated.
+
+Filters may be combined with `summarize`; `summary.row_count` then reports the number of matching rows while the top-level `row_count` remains the dataset total. To add grouped summaries, provide `group_by` and optional `aggregations`. Grouped results appear in `summary.groups`, with `group_by`, `total_groups`, and `groups_truncated`.
+
+### Result limits and truncation
+
+- `filter` and `sort` return at most `limit` rows, capped by `ANALYTICS_MAX_RESULT_ROWS` (default 1000). If more rows match, `truncated` is true and `matched_count` reports the full match count.
+- `group` and `aggregate` return at most `limit` groups, capped by `ANALYTICS_MAX_GROUPS` (default 100). `total_groups` reports all groups found, and `truncated` is true when some are omitted.
+- Categorical top-value lists are capped by `ANALYTICS_MAX_VALUE_FREQUENCIES`.
+- Result limits are validated as positive integers. Requested limits above the configured maximum are clamped to the maximum.
+
+Analytics never modifies the stored CSV. Filtering without sorting streams rows and retains at most the result limit plus one. Sorting must retain all matching rows in memory before ordering them. Grouping keeps per-group aggregation state for every group found, even when only the first configured number of groups is returned; median and standard deviation retain each group's numeric observations, and distinct counts retain each group's values. Summaries reuse the existing statistical profiler, which retains numeric observations and distinct strings. All operations are bounded by the configured CSV size, row, column, field, and line limits; no database or separate analytics process is used.
+
+Malformed dataset IDs and invalid request parameters return **422**. Missing or expired datasets return **404**. Unreadable or corrupted stored data returns a generic **500** without filesystem paths or parser internals.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -374,6 +544,12 @@ Run only the data quality tests with:
 
 ```bash
 pytest tests/test_dataset_quality.py
+```
+
+Run only the analytics tests with:
+
+```bash
+pytest tests/test_dataset_analytics.py
 ```
 
 Run only the storage tests with:

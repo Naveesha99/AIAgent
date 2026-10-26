@@ -22,6 +22,9 @@ class Settings(BaseSettings):
     max_csv_field_size: int = Field(default=1024 * 1024, gt=0)
     max_csv_validation_lines: int = Field(default=200_000, gt=0)
     data_quality_sample_limit: int = Field(default=5, ge=0, le=20)
+    analytics_max_result_rows: int = Field(default=1000, gt=0)
+    analytics_max_groups: int = Field(default=100, gt=0)
+    analytics_max_value_frequencies: int = Field(default=10, ge=1)
     dataset_storage_dir: Path = Field(
         default_factory=lambda: Path(__file__).resolve().parents[2]
         / "data"

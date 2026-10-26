@@ -4,7 +4,7 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 2.5 — Dataset preview.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads and stores them in private local temporary storage with a 24-hour default retention period. Analysis, question submission, and AI functionality are not implemented.
+**Phase 3.4 — Reusable analytics service.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. Natural-language questions, LLM integration, charts, and agent orchestration are not implemented.
 
 ## Planned technology stack
 
@@ -121,7 +121,11 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 8. **Phase 2.3 — Temporary dataset storage:** keep validated uploads on private local disk with expiration and cleanup. (Complete; development/single-instance only.)
 9. **Phase 2.4 — CSV upload UI:** select, validate, and upload CSV files through the frontend. (Complete.)
 10. **Phase 2.5 — Dataset preview:** show stored dataset metadata and paginated sample rows. (Complete.)
-11. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
-12. **Reliability and refinement:** improve error correction, testing, and user experience.
+11. **Phase 3.1 — Dataset metadata:** infer column types and missing-value counts. (Complete.)
+12. **Phase 3.2 — Statistical profiling:** return descriptive statistics for stored datasets. (Complete.)
+13. **Phase 3.3 — Data quality analysis:** report missing values, duplicates, invalid dates, and type inconsistencies. (Complete.)
+14. **Phase 3.4 — Reusable analytics service:** support filtering, sorting, grouping, aggregation, and summarization. (Complete.)
+15. **Question-and-answer experience:** connect natural-language questions to analysis and chart generation.
+16. **Reliability and refinement:** improve error correction, testing, and user experience.
 
 Later phases are planned only; none of their functionality is present yet. Local temporary file storage is not production dataset storage.
