@@ -8,6 +8,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes.datasets import router as datasets_router
 from app.api.routes.health import router as health_router
+from app.api.routes.questions import router as questions_router
 from app.core.config import get_settings
 
 settings = get_settings()
@@ -25,6 +26,7 @@ app.add_middleware(
 )
 app.include_router(health_router, prefix="/api/v1")
 app.include_router(datasets_router, prefix="/api/v1/datasets")
+app.include_router(questions_router, prefix="/api/v1/datasets")
 
 
 @app.exception_handler(RequestValidationError)
