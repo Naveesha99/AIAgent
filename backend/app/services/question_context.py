@@ -5,7 +5,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from app.schemas.dataset import DatasetStatisticsResponse
+from app.schemas.dataset import (
+    DatasetQualityResponse,
+    DatasetStatisticsResponse,
+)
 
 MAX_CONTEXT_CHARS = 48_000
 _MAX_QUALITY_WARNINGS = 10
@@ -33,10 +36,15 @@ def _missing_percentage(missing_count: int, row_count: int) -> float:
     return round(missing_count / row_count * 100, 2)
 
 
-def build_dataset_context(statistics: DatasetStatisticsResponse) -> str:
+def build_dataset_context(
+    statistics: DatasetStatisticsResponse,
+    quality: DatasetQualityResponse | None = None,
+) -> str:
     """Serialize schema-level statistics without row values or storage paths."""
     rows: list[dict[str, Any]] = []
+    missing_warnings: list[dict[str, Any]] = []
     quality_warnings: list[dict[str, Any]] = []
+    quality_summary: dict[str, int] | None = None
 
     for column in statistics.column_statistics:
         classification = _column_classification(column.data_type)
@@ -59,7 +67,7 @@ def build_dataset_context(statistics: DatasetStatisticsResponse) -> str:
         rows.append(column_context)
 
         if column.null_count:
-            quality_warnings.append(
+            missing_warnings.append(
                 {
                     "category": "missing_values",
                     "column": column.name,
@@ -67,6 +75,24 @@ def build_dataset_context(statistics: DatasetStatisticsResponse) -> str:
                     "percentage": column_context["missing_percentage"],
                 }
             )
+
+    if quality is not None:
+        quality_summary = quality.summary.model_dump()
+        for issue in quality.issues:
+            if issue.category == "missing_values":
+                continue
+            warning: dict[str, Any] = {
+                "category": issue.category,
+                "count": issue.count,
+                "description": issue.description,
+            }
+            if issue.column is not None:
+                warning["column"] = issue.column
+            if issue.percentage is not None:
+                warning["percentage"] = issue.percentage
+            quality_warnings.append(warning)
+
+    quality_warnings.extend(missing_warnings)
 
     context = {
         "row_count": statistics.row_count,
@@ -92,6 +118,8 @@ def build_dataset_context(statistics: DatasetStatisticsResponse) -> str:
             len(quality_warnings) > _MAX_QUALITY_WARNINGS
         ),
     }
+    if quality_summary is not None:
+        context["quality_summary"] = quality_summary
     serialized = json.dumps(
         context,
         ensure_ascii=True,

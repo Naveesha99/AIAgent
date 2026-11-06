@@ -2,7 +2,7 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
-Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. The question endpoint sends bounded schema and aggregate statistics, never full CSV contents or raw row values, and it does not execute generated code or calculate the requested answer. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is returned as text only: it is not validated, executed, or used to calculate the requested answer. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
 
 ## Requirements
 
@@ -106,11 +106,11 @@ uvicorn app.main:app --reload --host "$API_HOST" --port "$API_PORT"
 
 In Windows PowerShell, use `$env:API_HOST` and `$env:API_PORT` in the Uvicorn command instead.
 
-Do not put credentials in `backend/.env.example` or commit a local environment file. A Gemini API key is required only for the natural-language question endpoint, which constructs the configured LLM client. Health, upload, preview, metadata, statistics, quality, and analytics do not use an LLM key.
+Do not put credentials in `backend/.env.example` or commit a local environment file. A Gemini API key is required only for the natural-language question and code-generation endpoints, which construct the configured LLM client. Health, upload, preview, metadata, statistics, quality, and analytics do not use an LLM key.
 
 ## Configure the Google Gemini provider
 
-Phase 4.1 provides a provider-independent client interface under `app/services/llm/`. The factory selects the provider from `LLM_PROVIDER`, and only the Gemini implementation is supported. Constructing the client does not send a request or consume API quota. The natural-language question endpoint uses `generate`; all other endpoints remain LLM-free.
+Phase 4.1 provides a provider-independent client interface under `app/services/llm/`. The factory selects the provider from `LLM_PROVIDER`, and only the Gemini implementation is supported. Constructing the client does not send a request or consume API quota. The natural-language question and code-generation endpoints use `generate`; all other endpoints remain LLM-free. Code generation normally makes two model calls: one to validate the interpretation and one to generate code.
 
 ### Obtain an API key
 
@@ -655,7 +655,7 @@ The request body contains exactly one field: `question`, stripped of surrounding
 
 `status` is either `interpreted` or `clarification_needed`. Supported intents are `filter`, `group_and_aggregate`, `aggregate`, `sort`, `compare`, `summarize`, `clarification_needed`, and `unsupported`.
 
-The endpoint does not calculate or return the requested result. It performs no pandas execution, code generation, SQL execution, filesystem access by the model, chart generation, persistence, conversation history, or streaming. A later phase is expected to plan and execute the validated interpretation.
+This endpoint does not calculate or return the requested result. It performs no pandas execution, code generation, SQL execution, filesystem access by the model, chart generation, persistence, conversation history, or streaming. The separate generate-code endpoint can propose code from the validated interpretation, but it does not execute it; a later phase is expected to validate and execute code safely.
 
 ### Model context and privacy
 
@@ -699,6 +699,88 @@ A clarification response still returns HTTP 200 with the structured interpretati
 
 The endpoint does not log API keys, prompts, or request content.
 
+## Pandas code generation API
+
+`POST /api/v1/datasets/{dataset_id}/generate-code` interprets a question and asks Gemini to propose pandas analysis code. It requires `GEMINI_API_KEY` and the other provider settings described above.
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/generate-code \
+  -H "Content-Type: application/json" \
+  -d '{"question":"Which product had the highest total quantity sold?"}'
+```
+
+The request body contains exactly one field: `question`, stripped of surrounding whitespace and limited to 1–2,000 characters.
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "question": "Which product had the highest total quantity sold?",
+  "status": "generated",
+  "interpretation": {
+    "question": "Which product had the highest total quantity sold?",
+    "intent": "group_and_aggregate",
+    "referenced_columns": ["product", "quantity"],
+    "requested_metrics": [
+      {
+        "name": "total quantity",
+        "column": "quantity",
+        "aggregation": "sum",
+        "supported": true,
+        "limitation": null
+      }
+    ],
+    "group_by": ["product"],
+    "filters": null,
+    "sort": {"column": "total quantity", "direction": "desc"},
+    "limit": 1,
+    "clarification_question": null,
+    "assumptions": []
+  },
+  "generated_code": "working = df.copy()\nresult = (\n    working.groupby(\"product\", dropna=False)[\"quantity\"]\n    .sum()\n    .sort_values(ascending=False)\n    .head(1)\n)",
+  "explanation": "Sums quantity by product and returns the highest group.",
+  "operation": "group_and_aggregate",
+  "referenced_columns": ["product", "quantity"],
+  "assumptions": [],
+  "warnings": [
+    "Generated code is untrusted and has not been validated or executed."
+  ],
+  "clarification_question": null
+}
+```
+
+`status` is either `generated` or `clarification_needed`. When `status` is `generated`, `generated_code` is present. When the interpretation requires clarification or reports an unsupported question, the endpoint returns HTTP 200 with `status: "clarification_needed"`, no generated code, and the interpretation's clarification question and warnings. No second model call is made in that case.
+
+### Generation behavior and limitations
+
+- The endpoint first applies the same schema-aware interpretation validation as `/questions`. Unknown columns, incomplete operations, and aggregations that require a non-numeric column still require clarification instead of generating code.
+- Unlike `/questions`, derived metrics are allowed to proceed to code generation when they use real columns and explicit calculations. For example, revenue may be generated as quantity multiplied by unit price. The interpretation may still show `supported: false` for such a metric because that field describes the existing analytics operations, not the generated pandas code.
+- The model receives the validated interpretation and dataset context and must return one JSON object with `code`, `explanation`, optional `operation`, `referenced_columns`, `assumptions`, and `warnings`. A single surrounding JSON code fence is accepted.
+- This phase performs only basic field and length validation. It does not parse the Python AST, enforce an import allowlist, sanitize the code, or evaluate whether the code is correct. Full validation and any execution safety belong to a later phase.
+- A fenced `code` string is unwrapped for display. Unknown columns reported by the model are never substituted; they are added to the warnings. If the model omits referenced columns, the interpretation's columns are used with a warning.
+- If the model omits code but provides an explanation or warnings, the endpoint returns HTTP 200 with `status: "clarification_needed"` and no code. If the model returns neither code nor an explanation, or returns malformed/incomplete structured output, the endpoint returns a controlled **502** without echoing raw output.
+- If the model omits only the explanation for valid code, a safe fallback explanation and warning are returned.
+- Warnings are deduplicated and capped at 20. Generated code always includes an explicit warning that it is untrusted and has not been validated or executed.
+
+### Context, privacy, and security
+
+The code-generation context contains the same bounded schema and aggregate statistics as question interpretation, plus the data-quality summary and up to 10 quality warnings. Non-missing quality warnings, such as invalid dates, type inconsistencies, and duplicate rows, are listed before missing-value warnings, then the list is truncated with an explicit flag if needed.
+
+The context excludes filenames, storage paths, raw row records, general cell values, quality sample values, prompts, credentials, and provider internals. It is limited to 48,000 serialized characters; larger metadata is rejected with **422** instead of being truncated unsafely.
+
+The prompt treats the metadata, validated interpretation, and user question as untrusted data and instructs the model not to access files or networks, use shells or databases, use `eval`/`exec`/dynamic imports, or perform expensive computations. These are model instructions, not a security boundary. The returned code remains untrusted text and is never executed by this endpoint.
+
+### Code-generation endpoint errors
+
+- **422** — malformed dataset ID, missing/blank/oversized question, extra request fields, or metadata too large for safe model context.
+- **404** — missing or expired dataset.
+- **429** — provider rate limit or exhausted quota. `Retry-After` is included when the provider supplies a finite delay.
+- **502** — invalid interpretation, malformed or incomplete code-generation response, rejected credentials, unavailable model, invalid provider request, or other provider response failure.
+- **503** — missing provider configuration or a temporary provider connection/transient failure.
+- **504** — provider timeout.
+- **500** — stored data cannot be read safely.
+
+No endpoint logs API keys, prompts, generated code, or request content. Errors do not expose filesystem paths, parser internals, credentials, prompts, or raw provider responses.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -707,7 +789,13 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1 and 4.2 tests inject fake Gemini clients and mocked SDK outcomes, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–4.3 tests inject fake Gemini clients and mocked SDK outcomes, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+
+Run only the pandas code-generation tests with:
+
+```bash
+pytest tests/test_phase43_code_generation.py
+```
 
 Run only the natural-language question tests with:
 

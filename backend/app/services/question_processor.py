@@ -118,6 +118,8 @@ def _validate_metric(
     metric: ProposedMetric,
     columns: dict[str, DatasetColumnStatistics],
     warnings: list[str],
+    *,
+    allow_derived_metrics: bool = False,
 ) -> tuple[QuestionMetric, bool]:
     """Return a normalized metric and whether the proposal is blocked."""
     blocked = False
@@ -135,7 +137,7 @@ def _validate_metric(
             metric.aggregation != "count"
         ):
             supported = False
-            blocked = True
+            blocked = not allow_derived_metrics
             limitation = _derived_metric_limitation(metric)
             _add_warning(warnings, limitation)
     else:
@@ -154,7 +156,7 @@ def _validate_metric(
             )
         elif _count_metric_has_exclusions(metric):
             supported = False
-            blocked = True
+            blocked = not allow_derived_metrics
             limitation = _derived_metric_limitation(metric)
             _add_warning(warnings, limitation)
 
@@ -277,6 +279,8 @@ def normalize_interpretation(
     draft: QuestionInterpretationDraft,
     question: str,
     statistics: DatasetStatisticsResponse,
+    *,
+    allow_derived_metrics: bool = False,
 ) -> tuple[QuestionInterpretation, list[str]]:
     """Validate a model proposal against the actual dataset schema."""
     columns = {
@@ -305,7 +309,12 @@ def normalize_interpretation(
 
     metrics: list[QuestionMetric] = []
     for proposed in draft.requested_metrics:
-        metric, metric_blocked = _validate_metric(proposed, columns, warnings)
+        metric, metric_blocked = _validate_metric(
+            proposed,
+            columns,
+            warnings,
+            allow_derived_metrics=allow_derived_metrics,
+        )
         metrics.append(metric)
         blocked = blocked or metric_blocked
     metric_names = {metric.name for metric in metrics}
@@ -399,14 +408,20 @@ def normalize_interpretation(
     return interpretation, warnings
 
 
-async def process_question(
+async def interpret_question(
     storage: DatasetStorage,
     settings: Settings,
     llm_client: LLMClient,
     dataset_id: str,
     question: str,
-) -> QuestionProcessingResponse:
-    """Retrieve bounded metadata, call the model, and validate its proposal."""
+    *,
+    allow_derived_metrics: bool = False,
+) -> tuple[
+    QuestionInterpretation,
+    DatasetStatisticsResponse,
+    list[str],
+]:
+    """Interpret a question and return the statistics used for the decision."""
     statistics = await anyio.to_thread.run_sync(
         create_dataset_statistics,
         storage,
@@ -424,6 +439,25 @@ async def process_question(
         draft,
         question,
         statistics,
+        allow_derived_metrics=allow_derived_metrics,
+    )
+    return interpretation, statistics, warnings
+
+
+async def process_question(
+    storage: DatasetStorage,
+    settings: Settings,
+    llm_client: LLMClient,
+    dataset_id: str,
+    question: str,
+) -> QuestionProcessingResponse:
+    """Retrieve bounded metadata, call the model, and validate its proposal."""
+    interpretation, statistics, warnings = await interpret_question(
+        storage,
+        settings,
+        llm_client,
+        dataset_id,
+        question,
     )
     status = (
         "clarification_needed"
