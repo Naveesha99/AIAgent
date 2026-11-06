@@ -4,8 +4,10 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal, Optional
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from app.core.llm_scenarios import DEFAULT_MOCK_SCENARIO, MOCK_SCENARIOS
 
 
 BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -42,6 +44,11 @@ class Settings(BaseSettings):
     gemini_api_key: Optional[SecretStr] = None
     llm_timeout_seconds: float = Field(default=30.0, gt=0, le=600)
     llm_max_retries: int = Field(default=2, ge=0, le=5)
+    llm_retry_base_delay_seconds: float = Field(default=1.0, ge=0, le=60)
+    llm_retry_max_delay_seconds: float = Field(default=30.0, ge=0, le=300)
+    llm_retry_jitter_ratio: float = Field(default=0.2, ge=0, le=1)
+    llm_mock_scenario: str = Field(default=DEFAULT_MOCK_SCENARIO, min_length=1)
+    llm_mock_model: str = Field(default="mock-deterministic", min_length=1)
 
     @field_validator("llm_provider", mode="before")
     @classmethod
@@ -58,6 +65,41 @@ class Settings(BaseSettings):
         if isinstance(value, str):
             return value.strip()
         return value
+
+    @field_validator("llm_mock_model", mode="before")
+    @classmethod
+    def normalize_llm_mock_model(cls, value: object) -> object:
+        """Strip surrounding whitespace from the mock model identifier."""
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("llm_mock_scenario", mode="before")
+    @classmethod
+    def normalize_mock_scenario(cls, value: object) -> object:
+        """Normalize and validate the deterministic mock scenario name."""
+        if isinstance(value, str):
+            scenario = value.strip().lower()
+            if scenario not in MOCK_SCENARIOS:
+                raise ValueError(
+                    "LLM_MOCK_SCENARIO must be one of: "
+                    + ", ".join(sorted(MOCK_SCENARIOS))
+                )
+            return scenario
+        return value
+
+    @model_validator(mode="after")
+    def validate_retry_delays(self) -> "Settings":
+        """Keep the exponential backoff delay range coherent."""
+        if (
+            self.llm_retry_base_delay_seconds
+            > self.llm_retry_max_delay_seconds
+        ):
+            raise ValueError(
+                "LLM_RETRY_BASE_DELAY_SECONDS must not exceed "
+                "LLM_RETRY_MAX_DELAY_SECONDS."
+            )
+        return self
 
     @property
     def allowed_origins(self) -> list[str]:

@@ -10,6 +10,7 @@ from app.schemas.analytics import (
     FilterGroup,
     SortDirection,
 )
+from app.schemas.llm_usage import LLMUsage
 
 QuestionIntent = Literal[
     "filter",
@@ -159,3 +160,4 @@ class QuestionProcessingResponse(BaseModel):
         max_length=500,
     )
     warnings: list[WarningText] = Field(default_factory=list)
+    usage: Optional[LLMUsage] = None

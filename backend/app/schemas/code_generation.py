@@ -10,6 +10,7 @@ from pydantic import (
     field_validator,
 )
 
+from app.schemas.llm_usage import LLMUsage
 from app.schemas.questions import (
     AssumptionText,
     ColumnName,
@@ -151,3 +152,6 @@ class CodeGenerationResponse(BaseModel):
         min_length=1,
         max_length=500,
     )
+    usage: Optional[LLMUsage] = None
+    interpretation_usage: Optional[LLMUsage] = None
+    code_generation_usage: Optional[LLMUsage] = None

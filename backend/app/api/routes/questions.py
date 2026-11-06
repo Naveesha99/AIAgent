@@ -1,8 +1,5 @@
 """Natural-language dataset question and code generation endpoints."""
 
-import math
-from typing import Optional
-
 import anyio
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,7 +12,7 @@ from app.schemas.code_generation import (
 from app.schemas.questions import QuestionProcessingResponse, QuestionRequest
 from app.services.code_generator import (
     CodeGenerationError,
-    generate_pandas_code,
+    generate_pandas_code_with_usage,
 )
 from app.services.csv_validator import CsvValidationError
 from app.services.data_quality_analyzer import analyze_dataset_quality
@@ -25,25 +22,14 @@ from app.services.dataset_storage import (
     DatasetStorageError,
     InvalidDatasetIdError,
 )
-from app.services.llm.base import (
-    LLMAuthenticationError,
-    LLMConfigurationError,
-    LLMConnectionError,
-    LLMInvalidRequestError,
-    LLMModelUnavailableError,
-    LLMPermissionError,
-    LLMProviderError,
-    LLMQuotaExceededError,
-    LLMRateLimitError,
-    LLMResponseError,
-    LLMTimeoutError,
-    LLMTransientError,
-)
+from app.services.llm.base import LLMError
+from app.services.llm.error_mapping import map_llm_error
 from app.services.llm.factory import create_llm_client
+from app.services.llm.usage import combine_usage
 from app.services.question_context import QuestionContextError
 from app.services.question_processor import (
     QuestionInterpretationError,
-    interpret_question,
+    interpret_question_with_usage,
     process_question,
 )
 
@@ -61,6 +47,20 @@ def _merge_warnings(*groups: list[str]) -> list[str]:
     if len(warnings) > 20:
         return warnings[:19] + ["Additional warnings were omitted."]
     return warnings
+
+
+def _llm_validation_error(
+    detail: str,
+    exc: LLMError,
+) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_502_BAD_GATEWAY,
+        detail=detail,
+        headers={
+            "X-LLM-Error-Code": exc.code,
+            "X-LLM-Error-Temporary": "false",
+        },
+    )
 
 
 def _http_error_for(exc: Exception) -> HTTPException:
@@ -82,66 +82,20 @@ def _http_error_for(exc: Exception) -> HTTPException:
             detail=str(exc),
         )
     if isinstance(exc, QuestionInterpretationError):
-        return HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail=str(exc),
-        )
+        return _llm_validation_error(str(exc), exc)
     if isinstance(exc, CodeGenerationError):
-        return HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The model returned an invalid code generation response.",
+        return _llm_validation_error(
+            "The model returned an invalid code generation response.",
+            exc,
         )
-    if isinstance(exc, LLMConfigurationError):
-        return HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=str(exc),
-        )
-    if isinstance(exc, LLMTimeoutError):
-        return HTTPException(
-            status_code=status.HTTP_504_GATEWAY_TIMEOUT,
-            detail="The language model request timed out.",
-        )
-    if isinstance(exc, LLMRateLimitError):
-        headers: Optional[dict[str, str]] = None
-        if exc.retry_after is not None and math.isfinite(exc.retry_after):
-            headers = {
-                "Retry-After": str(max(0, math.ceil(exc.retry_after)))
-            }
-        return HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="The language model rate limit was reached.",
-            headers=headers,
-        )
-    if isinstance(exc, LLMQuotaExceededError):
-        return HTTPException(
-            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
-            detail="The language model quota is exhausted.",
-        )
-    if isinstance(
-        exc,
-        (
-            LLMAuthenticationError,
-            LLMPermissionError,
-            LLMModelUnavailableError,
-        ),
-    ):
-        return HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The configured language model is unavailable.",
-        )
-    if isinstance(exc, (LLMConnectionError, LLMTransientError)):
-        return HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="The language model provider is temporarily unavailable.",
-        )
-    if isinstance(
-        exc,
-        (LLMInvalidRequestError, LLMProviderError, LLMResponseError),
-    ):
-        return HTTPException(
-            status_code=status.HTTP_502_BAD_GATEWAY,
-            detail="The language model returned an invalid response.",
-        )
+    if isinstance(exc, LLMError):
+        mapped = map_llm_error(exc)
+        if mapped is not None:
+            return HTTPException(
+                status_code=mapped.status_code,
+                detail=mapped.detail,
+                headers=mapped.headers,
+            )
     if isinstance(
         exc,
         (CsvValidationError, DatasetStorageError, OSError, ValueError),
@@ -253,15 +207,18 @@ async def generate_dataset_code(
     try:
         storage.resolve(dataset_id)
         llm_client = create_llm_client(settings)
-        interpretation, statistics, interpretation_warnings = (
-            await interpret_question(
-                storage,
-                settings,
-                llm_client,
-                dataset_id,
-                request.question,
-                allow_derived_metrics=True,
-            )
+        (
+            interpretation,
+            statistics,
+            interpretation_warnings,
+            interpretation_usage,
+        ) = await interpret_question_with_usage(
+            storage,
+            settings,
+            llm_client,
+            dataset_id,
+            request.question,
+            allow_derived_metrics=True,
         )
         if interpretation.clarification_question is not None:
             return CodeGenerationResponse(
@@ -275,6 +232,8 @@ async def generate_dataset_code(
                 clarification_question=(
                     interpretation.clarification_question
                 ),
+                usage=interpretation_usage,
+                interpretation_usage=interpretation_usage,
             )
 
         quality = await anyio.to_thread.run_sync(
@@ -283,12 +242,14 @@ async def generate_dataset_code(
             settings,
             dataset_id,
         )
-        result = await generate_pandas_code(
-            llm_client,
-            request.question,
-            interpretation,
-            statistics,
-            quality,
+        result, code_generation_usage = (
+            await generate_pandas_code_with_usage(
+                llm_client,
+                request.question,
+                interpretation,
+                statistics,
+                quality,
+            )
         )
         warnings = _merge_warnings(
             result.warnings,
@@ -311,6 +272,11 @@ async def generate_dataset_code(
             clarification_question=(
                 interpretation.clarification_question
             ),
+            usage=combine_usage(
+                [interpretation_usage, code_generation_usage]
+            ),
+            interpretation_usage=interpretation_usage,
+            code_generation_usage=code_generation_usage,
         )
     except Exception as exc:
         raise _http_error_for(exc) from exc

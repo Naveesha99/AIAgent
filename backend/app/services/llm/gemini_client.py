@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 import re
+import time
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Any, Awaitable, Callable, Optional, Sequence
@@ -14,10 +16,15 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 
+from app.services.llm.observability import (
+    log_llm_failure,
+    log_llm_success,
+)
 from app.services.llm.base import (
     LLMAuthenticationError,
     LLMConfigurationError,
     LLMConnectionError,
+    LLMEmptyResponseError,
     LLMError,
     LLMInvalidRequestError,
     LLMMessage,
@@ -61,6 +68,8 @@ class GeminiClient:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         retry_backoff_seconds: float = 0.5,
         max_retry_delay_seconds: float = 30.0,
+        retry_jitter_ratio: float = 0.0,
+        random_uniform: Callable[[float, float], float] = random.uniform,
     ) -> None:
         clean_key = api_key.strip() if isinstance(api_key, str) else ""
         if not clean_key:
@@ -81,6 +90,14 @@ class GeminiClient:
             raise LLMConfigurationError(
                 "LLM_MAX_RETRIES must be between 0 and 5."
             )
+        if not 0 <= retry_jitter_ratio <= 1:
+            raise LLMConfigurationError(
+                "LLM_RETRY_JITTER_RATIO must be between 0 and 1."
+            )
+        if max_retry_delay_seconds < 0:
+            raise LLMConfigurationError(
+                "LLM_RETRY_MAX_DELAY_SECONDS must not be negative."
+            )
 
         self._model = clean_model
         self._timeout_seconds = float(timeout_seconds)
@@ -88,6 +105,8 @@ class GeminiClient:
         self._sleep = sleep
         self._retry_backoff_seconds = max(0.0, retry_backoff_seconds)
         self._max_retry_delay_seconds = max(0.0, max_retry_delay_seconds)
+        self._retry_jitter_ratio = float(retry_jitter_ratio)
+        self._random_uniform = random_uniform
 
         if client is None:
             http_options = genai_types.HttpOptions(
@@ -116,6 +135,7 @@ class GeminiClient:
         contents = self._build_contents(messages)
         config = self._build_config(system_instruction)
         retry_count = 0
+        started = time.perf_counter()
 
         while True:
             try:
@@ -127,7 +147,13 @@ class GeminiClient:
                     ),
                     timeout=self._timeout_seconds,
                 )
-                return self._normalize_response(response)
+                normalized = self._normalize_response(
+                    response,
+                    retry_count=retry_count,
+                    request_duration_seconds=time.perf_counter() - started,
+                )
+                log_llm_success("provider_request", normalized)
+                return normalized
             except asyncio.CancelledError:
                 raise
             except (asyncio.TimeoutError, TimeoutError):
@@ -161,6 +187,12 @@ class GeminiClient:
                 not isinstance(error, _RETRYABLE_ERRORS)
                 or retry_count >= self._max_retries
             ):
+                log_llm_failure(
+                    "provider_request",
+                    error,
+                    provider=self.provider,
+                    model=self._model,
+                )
                 raise error from None
 
             delay = self._retry_delay(error, retry_count)
@@ -208,10 +240,16 @@ class GeminiClient:
             system_instruction=system_instruction
         )
 
-    def _normalize_response(self, response: Any) -> LLMResponse:
+    def _normalize_response(
+        self,
+        response: Any,
+        *,
+        retry_count: int = 0,
+        request_duration_seconds: Optional[float] = None,
+    ) -> LLMResponse:
         text = getattr(response, "text", None)
         if not isinstance(text, str) or not text.strip():
-            raise LLMResponseError(
+            raise LLMEmptyResponseError(
                 "The Gemini provider returned an empty or malformed response."
             )
 
@@ -240,6 +278,8 @@ class GeminiClient:
             total_tokens=self._token_count(usage, "total_token_count"),
             response_id=response_id,
             model_version=model_version,
+            retry_count=retry_count,
+            request_duration_seconds=request_duration_seconds,
         )
 
     def _map_api_error(self, error: genai_errors.APIError) -> LLMError:
@@ -409,9 +449,20 @@ class GeminiClient:
                 max(0.0, retry_after),
                 self._max_retry_delay_seconds,
             )
-        return min(
+        base_delay = min(
             self._retry_backoff_seconds * (2**retry_count),
             self._max_retry_delay_seconds,
+        )
+        if base_delay <= 0 or self._retry_jitter_ratio <= 0:
+            return base_delay
+        jitter = (
+            self._random_uniform(-1.0, 1.0)
+            * base_delay
+            * self._retry_jitter_ratio
+        )
+        return max(
+            0.0,
+            min(base_delay + jitter, self._max_retry_delay_seconds),
         )
 
     @staticmethod

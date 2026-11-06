@@ -14,6 +14,7 @@ from app.schemas.dataset import (
     DatasetColumnStatistics,
     DatasetStatisticsResponse,
 )
+from app.schemas.llm_usage import LLMUsage
 from app.schemas.questions import (
     ProposedMetric,
     QuestionInterpretation,
@@ -22,7 +23,15 @@ from app.schemas.questions import (
     QuestionProcessingResponse,
 )
 from app.services.dataset_storage import DatasetStorage
-from app.services.llm.base import LLMClient, LLMMessage
+from app.services.llm.base import (
+    LLMClient,
+    LLMError,
+    LLMErrorCode,
+    LLMMessage,
+    LLMValidationError,
+)
+from app.services.llm.observability import log_llm_failure, log_llm_success
+from app.services.llm.usage import usage_from_response
 from app.services.question_context import build_dataset_context
 from app.services.question_prompt import (
     QUESTION_INTERPRETATION_SYSTEM_INSTRUCTION,
@@ -53,7 +62,7 @@ _COUNT_METRIC_EXCLUSIONS = {
 _MAX_WARNINGS = 20
 
 
-class QuestionInterpretationError(ValueError):
+class QuestionInterpretationError(LLMValidationError, ValueError):
     """A safely reportable failure to validate the model interpretation."""
 
 
@@ -61,7 +70,8 @@ def parse_interpretation_response(text: str) -> QuestionInterpretationDraft:
     """Parse model text as a strict JSON draft, accepting a JSON code fence."""
     if not isinstance(text, str) or not text.strip():
         raise QuestionInterpretationError(
-            "The model returned an empty question interpretation."
+            "The model returned an empty question interpretation.",
+            code=LLMErrorCode.EMPTY_RESPONSE,
         )
 
     payload = text.strip()
@@ -73,7 +83,8 @@ def parse_interpretation_response(text: str) -> QuestionInterpretationDraft:
             or lines[-1].strip() != "```"
         ):
             raise QuestionInterpretationError(
-                "The model returned an invalid question interpretation."
+                "The model returned an invalid question interpretation.",
+                code=LLMErrorCode.VALIDATION,
             )
         payload = "\n".join(lines[1:-1]).strip()
 
@@ -81,7 +92,8 @@ def parse_interpretation_response(text: str) -> QuestionInterpretationDraft:
         return QuestionInterpretationDraft.model_validate_json(payload)
     except (ValidationError, TypeError, ValueError):
         raise QuestionInterpretationError(
-            "The model returned an invalid question interpretation."
+            "The model returned an invalid question interpretation.",
+            code=LLMErrorCode.VALIDATION,
         ) from None
 
 
@@ -408,6 +420,58 @@ def normalize_interpretation(
     return interpretation, warnings
 
 
+async def interpret_question_with_usage(
+    storage: DatasetStorage,
+    settings: Settings,
+    llm_client: LLMClient,
+    dataset_id: str,
+    question: str,
+    *,
+    allow_derived_metrics: bool = False,
+) -> tuple[
+    QuestionInterpretation,
+    DatasetStatisticsResponse,
+    list[str],
+    LLMUsage,
+]:
+    """Interpret a question, retaining normalized usage metadata."""
+    statistics = await anyio.to_thread.run_sync(
+        create_dataset_statistics,
+        storage,
+        settings,
+        dataset_id,
+    )
+    context_json = build_dataset_context(statistics)
+    prompt = build_question_prompt(context_json, question)
+    try:
+        response = await llm_client.generate(
+            [LLMMessage("user", prompt)],
+            system_instruction=QUESTION_INTERPRETATION_SYSTEM_INSTRUCTION,
+        )
+    except LLMError as exc:
+        log_llm_failure(
+            "question_interpretation",
+            exc,
+            provider=getattr(llm_client, "provider", None),
+            model=getattr(llm_client, "model", None),
+        )
+        raise
+    log_llm_success("question_interpretation", response)
+    draft = parse_interpretation_response(response.text)
+    interpretation, warnings = normalize_interpretation(
+        draft,
+        question,
+        statistics,
+        allow_derived_metrics=allow_derived_metrics,
+    )
+    return (
+        interpretation,
+        statistics,
+        warnings,
+        usage_from_response(response),
+    )
+
+
 async def interpret_question(
     storage: DatasetStorage,
     settings: Settings,
@@ -422,24 +486,15 @@ async def interpret_question(
     list[str],
 ]:
     """Interpret a question and return the statistics used for the decision."""
-    statistics = await anyio.to_thread.run_sync(
-        create_dataset_statistics,
-        storage,
-        settings,
-        dataset_id,
-    )
-    context_json = build_dataset_context(statistics)
-    prompt = build_question_prompt(context_json, question)
-    response = await llm_client.generate(
-        [LLMMessage("user", prompt)],
-        system_instruction=QUESTION_INTERPRETATION_SYSTEM_INSTRUCTION,
-    )
-    draft = parse_interpretation_response(response.text)
-    interpretation, warnings = normalize_interpretation(
-        draft,
-        question,
-        statistics,
-        allow_derived_metrics=allow_derived_metrics,
+    interpretation, statistics, warnings, _ = (
+        await interpret_question_with_usage(
+            storage,
+            settings,
+            llm_client,
+            dataset_id,
+            question,
+            allow_derived_metrics=allow_derived_metrics,
+        )
     )
     return interpretation, statistics, warnings
 
@@ -452,12 +507,14 @@ async def process_question(
     question: str,
 ) -> QuestionProcessingResponse:
     """Retrieve bounded metadata, call the model, and validate its proposal."""
-    interpretation, statistics, warnings = await interpret_question(
-        storage,
-        settings,
-        llm_client,
-        dataset_id,
-        question,
+    interpretation, statistics, warnings, usage = (
+        await interpret_question_with_usage(
+            storage,
+            settings,
+            llm_client,
+            dataset_id,
+            question,
+        )
     )
     status = (
         "clarification_needed"
@@ -471,4 +528,5 @@ async def process_question(
         interpretation=interpretation,
         clarification_question=interpretation.clarification_question,
         warnings=warnings,
+        usage=usage,
     )

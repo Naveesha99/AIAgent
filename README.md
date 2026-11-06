@@ -4,14 +4,14 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 4.4 — Structured output validation.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interprets natural-language questions from bounded schema and aggregate statistics, without sending full CSV contents or raw row values, and returns a validated structured interpretation with clarifications and limitations. The code-generation endpoint then returns proposed pandas analysis code as untrusted, structurally validated text. The backend also defines strict schemas for generated code, allowlisted tool requests, and the final agent response. It does not safely validate or execute generated code, calculate results, generate charts, or orchestrate an agent yet.
+**Phase 4.5 — LLM reliability and usage.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interprets natural-language questions from bounded schema and aggregate statistics, without sending full CSV contents or raw row values, and returns a validated structured interpretation with clarifications and limitations. The code-generation endpoint then returns proposed pandas analysis code as untrusted, structurally validated text. LLM failures now use stable error codes, bounded retries with jitter, controlled HTTP mappings, safe structured logging, and normalized optional token usage; an explicit deterministic mock provider supports local use without a Gemini key or network. The backend also defines strict schemas for generated code, allowlisted tool requests, and the final agent response. It does not safely validate or execute generated code, calculate results, generate charts, or orchestrate an agent yet.
 
 ## Planned technology stack
 
 - **Frontend:** Next.js, TypeScript, and Tailwind CSS
 - **Backend:** Python and FastAPI
 - **Data analysis:** Python and pandas
-- **Language model:** Google Gemini through the official `google-genai` Python SDK, behind a provider-independent client interface
+- **Language model:** Google Gemini through the official `google-genai` Python SDK, behind a provider-independent client interface, with an explicit deterministic mock provider for local development and tests
 
 ## Repository layout
 
@@ -87,7 +87,7 @@ See the frontend and backend READMEs for environment setup and platform-specific
 
 ## Environment configuration
 
-`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS` and the optional Gemini provider settings. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. `GEMINI_API_KEY` is backend-only and is required only for natural-language question interpretation and pandas code generation; health, upload, profiling, quality, and analytics do not use it. See the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
+`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS` and the optional Gemini provider settings. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. `GEMINI_API_KEY` is backend-only and is required only when the Gemini provider handles natural-language question interpretation and pandas code generation; `LLM_PROVIDER=mock` needs no key or network. Health, upload, profiling, quality, and analytics do not use an LLM. See the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
 
 ## Integration troubleshooting
 
@@ -129,7 +129,8 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 16. **Phase 4.2 — Natural-language question interpretation:** interpret questions from bounded dataset metadata and return validated structured intent, metrics, filters, assumptions, and limitations without executing analysis. (Complete.)
 17. **Phase 4.3 — Unexecuted pandas code generation:** generate untrusted pandas analysis code from validated interpretations and bounded metadata without validating or executing it. (Complete.)
 18. **Phase 4.4 — Structured output validation:** strictly validate generated code, allowlisted tool requests, and final agent responses with bounded Pydantic schemas before returning or passing them to future stages. (Complete.)
-19. **Question-and-answer experience:** validate and safely execute generated analysis, then connect results to chart generation.
-20. **Reliability and refinement:** improve error correction, testing, and user experience.
+19. **Phase 4.5 — LLM reliability and usage:** standardize provider error codes and HTTP mappings, add bounded retries with jitter, normalize token usage, keep logs safe, and provide a deterministic mock provider. (Complete.)
+20. **Question-and-answer experience:** validate and safely execute generated analysis, then connect results to chart generation.
+21. **Reliability and refinement:** improve error correction, testing, and user experience.
 
 Later phases are planned only; none of their functionality is present yet. Local temporary file storage is not production dataset storage.

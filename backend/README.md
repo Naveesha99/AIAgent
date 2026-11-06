@@ -2,7 +2,7 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
-Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only: it is not executed, sandboxed, or used to calculate the requested answer. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only: it is not executed, sandboxed, or used to calculate the requested answer. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
 
 ## Requirements
 
@@ -71,6 +71,11 @@ export LLM_MODEL=gemini-3.5-flash-lite
 export GEMINI_API_KEY=your-api-key-from-google-ai-studio
 export LLM_TIMEOUT_SECONDS=30
 export LLM_MAX_RETRIES=2
+export LLM_RETRY_BASE_DELAY_SECONDS=1
+export LLM_RETRY_MAX_DELAY_SECONDS=30
+export LLM_RETRY_JITTER_RATIO=0.2
+export LLM_MOCK_SCENARIO=success
+export LLM_MOCK_MODEL=mock-deterministic
 ```
 
 On Windows PowerShell:
@@ -96,6 +101,11 @@ $env:LLM_MODEL = "gemini-3.5-flash-lite"
 $env:GEMINI_API_KEY = "your-api-key-from-google-ai-studio"
 $env:LLM_TIMEOUT_SECONDS = "30"
 $env:LLM_MAX_RETRIES = "2"
+$env:LLM_RETRY_BASE_DELAY_SECONDS = "1"
+$env:LLM_RETRY_MAX_DELAY_SECONDS = "30"
+$env:LLM_RETRY_JITTER_RATIO = "0.2"
+$env:LLM_MOCK_SCENARIO = "success"
+$env:LLM_MOCK_MODEL = "mock-deterministic"
 ```
 
 `APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `ANALYTICS_MAX_RESULT_ROWS` defaults to 1000 and caps filter/sort result rows. `ANALYTICS_MAX_GROUPS` defaults to 100 and caps returned groups. `ANALYTICS_MAX_VALUE_FREQUENCIES` defaults to 10 and caps categorical top values in summaries. `DATASET_STORAGE_DIR` defaults to `backend/data/datasets`; a relative override is resolved relative to the backend directory. `DATASET_TTL_HOURS` defaults to 24 hours. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
@@ -106,11 +116,11 @@ uvicorn app.main:app --reload --host "$API_HOST" --port "$API_PORT"
 
 In Windows PowerShell, use `$env:API_HOST` and `$env:API_PORT` in the Uvicorn command instead.
 
-Do not put credentials in `backend/.env.example` or commit a local environment file. A Gemini API key is required only for the natural-language question and code-generation endpoints, which construct the configured LLM client. Health, upload, preview, metadata, statistics, quality, and analytics do not use an LLM key.
+Do not put credentials in `backend/.env.example` or commit a local environment file. A Gemini API key is required only when the natural-language question and code-generation endpoints construct the Gemini client; the explicit mock provider needs no key. Health, upload, preview, metadata, statistics, quality, and analytics do not use an LLM key.
 
 ## Configure the Google Gemini provider
 
-Phase 4.1 provides a provider-independent client interface under `app/services/llm/`. The factory selects the provider from `LLM_PROVIDER`, and only the Gemini implementation is supported. Constructing the client does not send a request or consume API quota. The natural-language question and code-generation endpoints use `generate`; all other endpoints remain LLM-free. Code generation normally makes two model calls: one to validate the interpretation and one to generate code.
+Phase 4.1 provides a provider-independent client interface under `app/services/llm/`. The factory selects `gemini` or `mock` from `LLM_PROVIDER`. Constructing the client does not send a request or consume API quota. The natural-language question and code-generation endpoints use `generate`; all other endpoints remain LLM-free. Code generation normally makes two model calls: one to validate the interpretation and one to generate code. The selected provider is explicit: a Gemini failure never causes a silent fallback to mock mode.
 
 ### Obtain an API key
 
@@ -127,6 +137,9 @@ export LLM_MODEL=gemini-3.5-flash-lite
 export GEMINI_API_KEY="your-api-key-from-google-ai-studio"
 export LLM_TIMEOUT_SECONDS=30
 export LLM_MAX_RETRIES=2
+export LLM_RETRY_BASE_DELAY_SECONDS=1
+export LLM_RETRY_MAX_DELAY_SECONDS=30
+export LLM_RETRY_JITTER_RATIO=0.2
 ```
 
 Windows PowerShell:
@@ -137,15 +150,23 @@ $env:LLM_MODEL = "gemini-3.5-flash-lite"
 $env:GEMINI_API_KEY = "your-api-key-from-google-ai-studio"
 $env:LLM_TIMEOUT_SECONDS = "30"
 $env:LLM_MAX_RETRIES = "2"
+$env:LLM_RETRY_BASE_DELAY_SECONDS = "1"
+$env:LLM_RETRY_MAX_DELAY_SECONDS = "30"
+$env:LLM_RETRY_JITTER_RATIO = "0.2"
 ```
 
 Defaults and validation:
 
-- `LLM_PROVIDER` defaults to `gemini`; names are case-insensitive. Any other provider is rejected with a clear `LLMConfigurationError` when the client is requested. Keep the provider abstraction when adding another implementation.
+- `LLM_PROVIDER` defaults to `gemini`; names are case-insensitive. Supported values are `gemini` and `mock`. Any other provider is rejected with a clear `LLMConfigurationError` when the client is requested. Keep the provider abstraction when adding another implementation.
 - `LLM_MODEL` defaults to `gemini-3.5-flash-lite`, a free-tier-eligible model at the time of writing. A missing or blank model is rejected.
 - `GEMINI_API_KEY` has no default and must be non-blank when the Gemini client is constructed. It is held as a secret and is not included in settings representations.
 - `LLM_TIMEOUT_SECONDS` defaults to `30` and must be greater than `0` and at most `600`. The timeout is applied both to the SDK HTTP request and to the asynchronous call.
 - `LLM_MAX_RETRIES` defaults to `2` and must be between `0` and `5`. It counts retries after the initial attempt; `2` allows at most three attempts.
+- `LLM_RETRY_BASE_DELAY_SECONDS` defaults to `1` and must be between `0` and `60`. The first exponential retry delay uses this value.
+- `LLM_RETRY_MAX_DELAY_SECONDS` defaults to `30` and must be between `0` and `300`. It caps both exponential delays and provider retry guidance.
+- `LLM_RETRY_JITTER_RATIO` defaults to `0.2` and must be between `0` and `1`. It adds bounded random variation to exponential delays; provider `Retry-After` guidance is respected without jitter.
+- `LLM_MOCK_SCENARIO` selects the deterministic mock behavior and defaults to `success`. Invalid scenario names are rejected during settings validation.
+- `LLM_MOCK_MODEL` identifies the mock model in responses and logs and defaults to `mock-deterministic`.
 
 ### Choose an available model
 
@@ -172,7 +193,9 @@ Provider-specific SDK errors are converted to internal exceptions that do not in
 - `LLMResponseError` covers empty or malformed provider responses and is not retried.
 - `LLMProviderError` covers unexpected provider failures that cannot be classified safely.
 
-The retry delay starts at 0.5 seconds, doubles per retry, and is capped at 30 seconds. Provider retry guidance is also capped by that bound, so retries never continue indefinitely.
+The first exponential retry delay defaults to 1 second, doubles per retry, and is capped at 30 seconds. Bounded jitter defaults to 20 percent of the computed delay. Provider `Retry-After` or `RetryInfo` guidance is respected and also capped by the maximum delay. Retries are limited to configured transient failures; authentication, invalid-request, quota, unsupported-model, and validation failures are not retried. Because the attempt count, per-attempt timeout, and delay cap are all bounded, total request duration remains bounded. Cancellation and interrupted requests propagate without being converted into retries.
+
+Internal errors carry stable codes such as `rate_limited`, `quota_exceeded`, `timeout`, `connection_error`, `authentication_error`, `model_unavailable`, `malformed_response`, `empty_response`, and `validation_error`, and a `temporary` marker. Controlled API errors include `X-LLM-Error-Code` and `X-LLM-Error-Temporary` headers; rate-limit responses also include `Retry-After` when a finite delay is available. Response bodies keep the existing `{"detail": "..."}` convention and do not expose raw provider output, prompts, keys, or stack traces.
 
 ### Troubleshoot provider errors
 
@@ -186,6 +209,95 @@ The retry delay starts at 0.5 seconds, doubles per retry, and is capped at 30 se
 - **Malformed response** — the provider returned no usable text or an unexpected structure. Retry manually, confirm the model ID, and inspect provider status.
 
 API keys and request content are not logged or included in safe error messages. Keep all Gemini configuration on the backend.
+
+## Use the deterministic mock provider
+
+Phase 4.5 includes a mock provider for local development, tests, and frontend integration. It returns deterministic structured responses, makes no network requests, and does not require `GEMINI_API_KEY`. Select it explicitly:
+
+```bash
+export LLM_PROVIDER=mock
+export LLM_MOCK_MODEL=mock-deterministic
+export LLM_MOCK_SCENARIO=success
+```
+
+```powershell
+$env:LLM_PROVIDER = "mock"
+$env:LLM_MOCK_MODEL = "mock-deterministic"
+$env:LLM_MOCK_SCENARIO = "success"
+```
+
+The normal question and code-generation endpoints are used unchanged:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/questions \
+  -H "Content-Type: application/json" \
+  -d '{"question":"What does this dataset contain?"}'
+```
+
+A successful mock question response follows the normal response schema and adds usage metadata. Token values are deterministic estimates, not provider billing data:
+
+```json
+{
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "question": "What does this dataset contain?",
+  "status": "interpreted",
+  "interpretation": {
+    "question": "What does this dataset contain?",
+    "intent": "summarize",
+    "referenced_columns": [],
+    "requested_metrics": [],
+    "group_by": [],
+    "filters": null,
+    "sort": null,
+    "limit": null,
+    "clarification_question": null,
+    "assumptions": []
+  },
+  "clarification_question": null,
+  "warnings": [],
+  "usage": {
+    "provider": "mock",
+    "model": "mock-deterministic",
+    "input_tokens": 244,
+    "output_tokens": 54,
+    "total_tokens": 298,
+    "request_id": "mock-response-0001",
+    "request_duration_seconds": 0.0,
+    "retry_count": 0,
+    "request_count": 1,
+    "requests": []
+  }
+}
+```
+
+Supported scenarios:
+
+| Scenario | Behavior |
+| --- | --- |
+| `success` | Returns a deterministic `summarize` interpretation or candidate code. |
+| `candidate_code` | Returns the same deterministic candidate code as a successful code-generation call. |
+| `clarification` | Returns `clarification_needed` through the normal clarification flow. |
+| `malformed` | Returns non-JSON model text, which becomes a controlled validation error. |
+| `empty` | Returns empty model text, which becomes a controlled empty-response error. |
+| `malformed_code` | Returns non-JSON text for code generation only. |
+| `empty_code` | Returns empty text for code generation only. |
+| `rate_limit` | Raises a simulated rate-limit error with `Retry-After: 1`. |
+| `timeout` | Raises a simulated timeout error. |
+| `network_error` | Raises a simulated connection error. |
+| `server_error` | Raises a simulated transient server error. |
+| `authentication_error` | Raises a simulated authentication error. |
+| `quota_exceeded` | Raises a simulated quota-exhausted error. |
+| `unsupported_model` | Raises a simulated model-unavailable error. |
+
+The mock provider is explicit and isolated. A Gemini error never falls back to mock output. In tests, mocked or fake clients are injected directly and no provider or network is contacted.
+
+## LLM usage metadata
+
+Question responses include `usage`. Code-generation responses include aggregate `usage` plus per-call `interpretation_usage` and `code_generation_usage`. When generation requires clarification after interpretation, no code-generation call is made, so `code_generation_usage` is `null` and the aggregate contains only the interpretation call.
+
+Each usage object contains `provider`, `model`, optional provider-reported token counts, optional `request_id`, optional request duration, total `retry_count`, `request_count`, and a `requests` list for aggregated calls. For multiple calls, token and duration totals are present only when every contributing call reported that value; the backend never substitutes zero or estimates for missing provider data. Mock token counts are explicitly simulated deterministic estimates. The `retry_count` is the number of retries actually performed, not the configured maximum.
+
+Usage is informational only. It is not a cost calculation, is not persisted, and does not include prompt or CSV contents. Logs record provider, model, duration, retry count, safe error code, and token metadata where available; they never record API keys, prompts, raw row values, or raw provider responses.
 
 ## Run the development server
 
@@ -613,7 +725,7 @@ Malformed dataset IDs and invalid request parameters return **422**. Missing or 
 
 ## Natural-language question API
 
-`POST /api/v1/datasets/{dataset_id}/questions` asks Gemini to interpret a question against a stored dataset. It requires `GEMINI_API_KEY` and the other provider settings described above.
+`POST /api/v1/datasets/{dataset_id}/questions` asks the configured LLM provider to interpret a question against a stored dataset. The default Gemini provider requires `GEMINI_API_KEY`; the explicit mock provider requires no key or network access.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/questions \
@@ -649,9 +761,23 @@ The request body contains exactly one field: `question`, stripped of surrounding
     "assumptions": []
   },
   "clarification_question": null,
-  "warnings": []
+  "warnings": [],
+  "usage": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "input_tokens": 824,
+    "output_tokens": 118,
+    "total_tokens": 942,
+    "request_id": "example-provider-request",
+    "request_duration_seconds": 1.42,
+    "retry_count": 0,
+    "request_count": 1,
+    "requests": []
+  }
 }
 ```
+
+Token counts are provider-reported when available; a provider that does not report usage yields `null` rather than an invented value. Usage is not a cost estimate.
 
 `status` is either `interpreted` or `clarification_needed`. Supported intents are `filter`, `group_and_aggregate`, `aggregate`, `sort`, `compare`, `summarize`, `clarification_needed`, and `unsupported`.
 
@@ -697,11 +823,11 @@ A clarification response still returns HTTP 200 with the structured interpretati
 - **504** — provider timeout.
 - **500** — stored data cannot be read safely. Error details do not expose filesystem paths, parser internals, credentials, prompts, or raw provider responses.
 
-The endpoint does not log API keys, prompts, or request content.
+Controlled provider errors include `X-LLM-Error-Code` and `X-LLM-Error-Temporary` headers. Rate-limit responses include `Retry-After` when a finite delay is available. The endpoint does not log API keys, prompts, or request content.
 
 ## Pandas code generation API
 
-`POST /api/v1/datasets/{dataset_id}/generate-code` interprets a question and asks Gemini to propose pandas analysis code. It requires `GEMINI_API_KEY` and the other provider settings described above.
+`POST /api/v1/datasets/{dataset_id}/generate-code` interprets a question and asks the configured LLM provider to propose pandas analysis code. The default Gemini provider requires `GEMINI_API_KEY`; the explicit mock provider requires no key or network access.
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/v1/datasets/16335394-bb59-48aa-b13a-3a1dc91bab12/generate-code \
@@ -744,11 +870,72 @@ The request body contains exactly one field: `question`, stripped of surrounding
   "warnings": [
     "Generated code is untrusted and has not been validated or executed."
   ],
-  "clarification_question": null
+  "clarification_question": null,
+  "usage": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "input_tokens": 2310,
+    "output_tokens": 338,
+    "total_tokens": 2648,
+    "request_id": null,
+    "request_duration_seconds": 3.07,
+    "retry_count": 0,
+    "request_count": 2,
+    "requests": [
+      {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+        "input_tokens": 824,
+        "output_tokens": 118,
+        "total_tokens": 942,
+        "request_id": "example-interpretation-request",
+        "request_duration_seconds": 1.42,
+        "retry_count": 0,
+        "request_count": 1,
+        "requests": []
+      },
+      {
+        "provider": "gemini",
+        "model": "gemini-3.5-flash-lite",
+        "input_tokens": 1486,
+        "output_tokens": 220,
+        "total_tokens": 1706,
+        "request_id": "example-code-request",
+        "request_duration_seconds": 1.65,
+        "retry_count": 0,
+        "request_count": 1,
+        "requests": []
+      }
+    ]
+  },
+  "interpretation_usage": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "input_tokens": 824,
+    "output_tokens": 118,
+    "total_tokens": 942,
+    "request_id": "example-interpretation-request",
+    "request_duration_seconds": 1.42,
+    "retry_count": 0,
+    "request_count": 1,
+    "requests": []
+  },
+  "code_generation_usage": {
+    "provider": "gemini",
+    "model": "gemini-3.5-flash-lite",
+    "input_tokens": 1486,
+    "output_tokens": 220,
+    "total_tokens": 1706,
+    "request_id": "example-code-request",
+    "request_duration_seconds": 1.65,
+    "retry_count": 0,
+    "request_count": 1,
+    "requests": []
+  }
 }
 ```
 
-`status` is either `generated` or `clarification_needed`. When `status` is `generated`, `generated_code` is present. When the interpretation requires clarification or reports an unsupported question, the endpoint returns HTTP 200 with `status: "clarification_needed"`, no generated code, and the interpretation's clarification question and warnings. No second model call is made in that case.
+`status` is either `generated` or `clarification_needed`. When `status` is `generated`, `generated_code` is present. When the interpretation requires clarification or reports an unsupported question, the endpoint returns HTTP 200 with `status: "clarification_needed"`, no generated code, and the interpretation's clarification question and warnings. No second model call is made in that case, so `code_generation_usage` is `null` and aggregate `usage` describes only the interpretation call. When generation succeeds, `usage` combines both calls and `interpretation_usage` and `code_generation_usage` expose each normalized call.
 
 ### Generation behavior and limitations
 
@@ -778,7 +965,7 @@ The prompt treats the metadata, validated interpretation, and user question as u
 - **504** — provider timeout.
 - **500** — stored data cannot be read safely.
 
-No endpoint logs API keys, prompts, generated code, or request content. Errors do not expose filesystem paths, parser internals, credentials, prompts, or raw provider responses.
+Controlled provider errors include `X-LLM-Error-Code` and `X-LLM-Error-Temporary` headers; rate-limit responses include `Retry-After` when a finite delay is available. No endpoint logs API keys, prompts, generated code, or request content. Errors do not expose filesystem paths, parser internals, credentials, prompts, or raw provider responses.
 
 ## Structured output validation
 
@@ -916,7 +1103,13 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–4.4 tests inject fake Gemini clients and mocked SDK outcomes, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–4.5 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, and fake sleepers, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+
+Run only the Phase 4.5 provider reliability, usage, and mock-provider tests with:
+
+```bash
+pytest tests/test_phase45_llm_reliability.py
+```
 
 Run only the structured-output validation tests with:
 

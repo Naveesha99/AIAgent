@@ -14,18 +14,27 @@ from app.schemas.dataset import (
     DatasetQualityResponse,
     DatasetStatisticsResponse,
 )
+from app.schemas.llm_usage import LLMUsage
 from app.schemas.questions import QuestionInterpretation
 from app.services.code_generation_prompt import (
     CODE_GENERATION_SYSTEM_INSTRUCTION,
     build_code_generation_prompt,
 )
-from app.services.llm.base import LLMClient, LLMMessage
+from app.services.llm.base import (
+    LLMClient,
+    LLMError,
+    LLMErrorCode,
+    LLMMessage,
+    LLMValidationError,
+)
+from app.services.llm.observability import log_llm_failure, log_llm_success
+from app.services.llm.usage import usage_from_response
 from app.services.question_context import build_dataset_context
 
 _MAX_WARNINGS = 20
 
 
-class CodeGenerationError(ValueError):
+class CodeGenerationError(LLMValidationError, ValueError):
     """A safely reportable failure to parse or validate generated code."""
 
 
@@ -33,7 +42,8 @@ def parse_code_generation_response(text: str) -> GeneratedCode:
     """Parse strict JSON code-generation data, accepting one JSON code fence."""
     if not isinstance(text, str) or not text.strip():
         raise CodeGenerationError(
-            "The model returned an empty code generation response."
+            "The model returned an empty code generation response.",
+            code=LLMErrorCode.EMPTY_RESPONSE,
         )
 
     payload = text.strip()
@@ -45,7 +55,8 @@ def parse_code_generation_response(text: str) -> GeneratedCode:
             or lines[-1].strip() != "```"
         ):
             raise CodeGenerationError(
-                "The model returned an invalid code generation response."
+                "The model returned an invalid code generation response.",
+                code=LLMErrorCode.VALIDATION,
             )
         payload = "\n".join(lines[1:-1]).strip()
 
@@ -53,7 +64,8 @@ def parse_code_generation_response(text: str) -> GeneratedCode:
         return GeneratedCode.model_validate_json(payload)
     except (ValidationError, TypeError, ValueError):
         raise CodeGenerationError(
-            "The model returned an invalid code generation response."
+            "The model returned an invalid code generation response.",
+            code=LLMErrorCode.VALIDATION,
         ) from None
 
 
@@ -120,6 +132,43 @@ def validate_generated_code(
     )
 
 
+async def generate_pandas_code_with_usage(
+    llm_client: LLMClient,
+    question: str,
+    interpretation: QuestionInterpretation,
+    statistics: DatasetStatisticsResponse,
+    quality: Optional[DatasetQualityResponse] = None,
+) -> tuple[GeneratedCode, LLMUsage]:
+    """Generate untrusted pandas code and retain normalized usage metadata."""
+    context_json = build_dataset_context(statistics, quality)
+    prompt = build_code_generation_prompt(
+        context_json,
+        interpretation,
+        question,
+    )
+    try:
+        response = await llm_client.generate(
+            [LLMMessage("user", prompt)],
+            system_instruction=CODE_GENERATION_SYSTEM_INSTRUCTION,
+        )
+    except LLMError as exc:
+        log_llm_failure(
+            "code_generation",
+            exc,
+            provider=getattr(llm_client, "provider", None),
+            model=getattr(llm_client, "model", None),
+        )
+        raise
+    log_llm_success("code_generation", response)
+    generated = parse_code_generation_response(response.text)
+    validated = validate_generated_code(
+        generated,
+        interpretation,
+        statistics,
+    )
+    return validated, usage_from_response(response)
+
+
 async def generate_pandas_code(
     llm_client: LLMClient,
     question: str,
@@ -128,15 +177,11 @@ async def generate_pandas_code(
     quality: Optional[DatasetQualityResponse] = None,
 ) -> GeneratedCode:
     """Generate untrusted pandas code and validate its structured metadata."""
-    context_json = build_dataset_context(statistics, quality)
-    prompt = build_code_generation_prompt(
-        context_json,
-        interpretation,
+    generated, _ = await generate_pandas_code_with_usage(
+        llm_client,
         question,
+        interpretation,
+        statistics,
+        quality,
     )
-    response = await llm_client.generate(
-        [LLMMessage("user", prompt)],
-        system_instruction=CODE_GENERATION_SYSTEM_INSTRUCTION,
-    )
-    generated = parse_code_generation_response(response.text)
-    return validate_generated_code(generated, interpretation, statistics)
+    return generated
