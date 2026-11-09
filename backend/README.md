@@ -2,12 +2,13 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
-Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. Phase 5.1 defines technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Execution remains disabled by default, no execution API route is exposed, and no generated code is executed, sandboxed, compiled, or evaluated. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. Phase 5.1 defines technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Phase 5.2 adds an isolated, non-root Docker worker image with pinned pandas and NumPy runtime dependencies, startup health verification, and graceful shutdown. Execution remains disabled by default, no execution API route is exposed, the worker does not accept jobs or execute code, and no generated code is compiled, sandboxed, or evaluated. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
 
 ## Requirements
 
 - Python 3.9 or later
 - pip (included with Python)
+- Docker, only for building and verifying the optional Phase 5.2 worker image
 
 The project dependencies are pinned in `pyproject.toml`. The `.venv/` virtual environment is local and ignored by Git.
 
@@ -1225,6 +1226,48 @@ Error messages are sanitized to remove stack traces, internal absolute paths, en
 
 A future Docker-based engine can implement `ExecutionService` without changing these schemas: validate the request again against current settings, start or enqueue a bounded worker, return a result carrying the same IDs and statuses, truncate stdout/stderr with the helper before creating `ExecutionOutput`, measure duration/resource usage, and expose only safe `ExecutionError` values. The API layer and Pydantic contracts will not need to know about Docker, subprocesses, or worker internals.
 
+## Execution worker image
+
+Phase 5.2 adds an isolated runtime image under `execution_worker/`. It is not connected to the API and does not execute user-generated code. The container performs a startup health check and then remains idle until it receives `SIGTERM` or `SIGINT`. See [`execution_worker/README.md`](execution_worker/README.md) for full build, verification, restrictions, and troubleshooting details.
+
+The worker uses `python:3.12-slim-bookworm`, runs as UID/GID `10001:10001`, works in `/worker`, and exposes no ports. It installs only pinned `pandas==2.2.3`, `numpy==2.0.2`, and their pinned runtime dependencies. FastAPI, Uvicorn, Pydantic, Gemini SDKs, HTTP clients, database clients, SciPy, and frontend packages are excluded. SciPy is omitted because no existing backend analytics code imports it.
+
+Build from the repository root, using only the worker directory as context:
+
+```bash
+docker build --tag ai-data-analyst-worker:dev ./backend/execution_worker
+```
+
+Run a one-shot startup health check:
+
+```bash
+docker run --rm ai-data-analyst-worker:dev --once
+```
+
+Run the idle worker and stop it gracefully:
+
+```bash
+docker run --rm --name ai-data-analyst-worker ai-data-analyst-worker:dev
+docker stop --time 10 ai-data-analyst-worker
+```
+
+The worker identifies itself as `ai-data-analyst-execution-worker` version `0.1.0`. Its health check verifies Python `3.12` and the required analytics imports. A successful one-shot check exits `0`; a failed check exits `1`. Stopping an idle worker with `SIGTERM` logs shutdown and exits `0`.
+
+Verify the image, runtime user, Python version, analytics imports, excluded packages, build-context safety, health check, and graceful shutdown:
+
+```bash
+./backend/execution_worker/verify_image.sh
+```
+
+Inspect packages and image size:
+
+```bash
+docker run --rm --entrypoint python ai-data-analyst-worker:dev -m pip list
+docker image inspect --format '{{.Size}}' ai-data-analyst-worker:dev
+```
+
+The image alone is not a sandbox. Any later execution launch must add a read-only root filesystem, dropped capabilities, no privileged mode, no Docker socket, restricted network access, resource and storage limits, a restrictive seccomp profile, and controlled input/output mounts. Those controls are not implemented in Phase 5.2. There is no execution protocol, job queue, result retrieval, API integration, AST validation, or sandbox enforcement yet.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -1233,7 +1276,13 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–5.1 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, fake sleepers, and test-only service implementations, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–5.2 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, fake sleepers, and test-only service implementations, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage. Phase 5.2 tests statically verify the worker image configuration and run the worker entry point locally with a mocked health result; Docker runtime checks are performed separately by `execution_worker/verify_image.sh`.
+
+Run only the Phase 5.2 worker-image tests with:
+
+```bash
+pytest tests/test_phase52_execution_worker.py
+```
 
 Run only the Phase 5.1 execution-contract tests with:
 
