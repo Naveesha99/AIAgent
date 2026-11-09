@@ -217,8 +217,9 @@ def test_build_context_contains_no_secrets_or_local_datasets() -> None:
         assert "__pycache__" not in path.parts
 
 
-def test_worker_code_has_no_execution_or_backend_runtime_imports() -> None:
-    forbidden_calls = {"exec", "eval", "compile", "__import__"}
+def test_worker_execution_is_confined_to_runner_without_backend_imports() -> None:
+    forbidden_calls = {"eval", "__import__"}
+    execution_calls: set[str] = set()
     forbidden_modules = {
         "fastapi",
         "google",
@@ -234,6 +235,9 @@ def test_worker_code_has_no_execution_or_backend_runtime_imports() -> None:
         for node in ast.walk(tree):
             if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
                 assert node.func.id not in forbidden_calls, path
+                if node.func.id in {"exec", "compile"}:
+                    assert path.name == "execute.py", path
+                    execution_calls.add(node.func.id)
             if isinstance(node, ast.Import):
                 for alias in node.names:
                     root = alias.name.split(".", 1)[0]
@@ -241,6 +245,8 @@ def test_worker_code_has_no_execution_or_backend_runtime_imports() -> None:
             if isinstance(node, ast.ImportFrom) and node.module:
                 root = node.module.split(".", 1)[0]
                 assert root not in forbidden_modules, path
+
+    assert execution_calls == {"exec", "compile"}
 
 
 def test_health_check_reports_worker_identity_and_libraries(

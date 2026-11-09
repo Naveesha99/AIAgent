@@ -23,10 +23,14 @@ from pydantic import (
 
 from app.core.execution_limits import (
     ABSOLUTE_EXECUTION_MAX_CODE_SIZE_BYTES,
+    ABSOLUTE_EXECUTION_MAX_RESULT_BYTES,
+    ABSOLUTE_EXECUTION_MAX_RESULT_ROWS,
     ABSOLUTE_EXECUTION_MAX_STDERR_BYTES,
     ABSOLUTE_EXECUTION_MAX_STDOUT_BYTES,
     ABSOLUTE_EXECUTION_MAX_TIMEOUT_SECONDS,
     DEFAULT_EXECUTION_MAX_CODE_SIZE_BYTES,
+    DEFAULT_EXECUTION_MAX_RESULT_BYTES,
+    DEFAULT_EXECUTION_MAX_RESULT_ROWS,
     DEFAULT_EXECUTION_MAX_STDERR_BYTES,
     DEFAULT_EXECUTION_MAX_STDOUT_BYTES,
     DEFAULT_EXECUTION_MAX_TIMEOUT_SECONDS,
@@ -213,10 +217,10 @@ class ExecutionMetadata(BaseModel):
 
 
 class ExecutionRequest(BaseModel):
-    """A validated request for a future execution engine.
+    """A validated request for the isolated execution engine.
 
-    This schema does not execute code. It only binds the candidate code to a
-    dataset, a bounded timeout, and optional descriptive metadata.
+    Code is only executed by the Docker sandbox service, never in the API
+    process.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -374,6 +378,15 @@ class ExecutionStatusTransition(BaseModel):
         return self
 
 
+class ExecutionStatusResponse(BaseModel):
+    """Latest in-memory lifecycle state for one submitted execution."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    execution_id: ExecutionId
+    status: ExecutionStatus
+
+
 class ExecutionErrorCode(str, Enum):
     """Stable application-level execution error identifiers."""
 
@@ -509,6 +522,19 @@ class ExecutionResourceUsage(BaseModel):
     cpu_time_ms: Optional[float] = Field(default=None, ge=0)
     wall_time_ms: Optional[float] = Field(default=None, ge=0)
     peak_memory_bytes: Optional[int] = Field(default=None, ge=0)
+    exit_code: Optional[int] = Field(default=None, ge=0, le=255)
+    termination_reason: Optional[
+        Annotated[
+            str,
+            Field(
+                pattern=(
+                    "^(normal_exit|nonzero_exit|timeout|cancelled|"
+                    "out_of_memory|container_error|docker_unavailable|"
+                    "unknown)$"
+                )
+            ),
+        ]
+    ] = None
 
 
 class ExecutionOutput(BaseModel):
@@ -619,6 +645,12 @@ class ExecutionResult(BaseModel):
             context_name="max_stderr_bytes",
             default=DEFAULT_EXECUTION_MAX_STDERR_BYTES,
         )
+        max_result_bytes = _limit_from_context(
+            info,
+            setting_name="execution_max_result_bytes",
+            context_name="max_result_bytes",
+            default=DEFAULT_EXECUTION_MAX_RESULT_BYTES,
+        )
         if self.stdout.size_bytes > max_stdout:
             raise ValueError(
                 "Standard output exceeds the configured size limit."
@@ -671,7 +703,7 @@ class ExecutionResult(BaseModel):
             )
 
         if self.status is ExecutionStatus.COMPLETED:
-            if self.result is None:
+            if "result" not in self.model_fields_set:
                 raise ValueError(
                     "A completed execution must include a result."
                 )
@@ -735,6 +767,15 @@ class ExecutionResult(BaseModel):
             ) from None
         if len(serialized.encode("utf-8")) > MAX_EXECUTION_RESULT_BYTES:
             raise ValueError("Execution result is too large.")
+        if self.result is not None and len(
+            json.dumps(
+                self.result,
+                ensure_ascii=False,
+                allow_nan=False,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ) > max_result_bytes:
+            raise ValueError("Execution analysis result is too large.")
         return self
 
     @classmethod

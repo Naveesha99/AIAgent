@@ -4,21 +4,21 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 5.3 — Sandbox security configuration.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interprets natural-language questions from bounded schema and aggregate statistics, without sending full CSV contents or raw row values, and returns a validated structured interpretation with clarifications and limitations. The code-generation endpoint then returns proposed pandas analysis code as untrusted, structurally validated text. LLM failures use stable error codes, bounded retries with jitter, controlled HTTP mappings, safe structured logging, and normalized optional token usage; an explicit deterministic mock provider supports local use without a Gemini key or network. The backend also defines strict schemas for generated code, allowlisted tool requests, and the final agent response. Phase 5.1 adds technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Phase 5.2 adds an isolated non-root Docker worker image with pinned pandas and NumPy dependencies, a startup health check, and graceful shutdown. Phase 5.3 adds a centralized, validated Docker sandbox policy with non-root execution, dropped capabilities, no-new-privileges, default seccomp, no network, a read-only root, one read-only dataset mount, bounded temporary storage, and CPU, memory, swap, process, timeout, and output limits. The policy is configuration and verification only. The worker is not connected to the API, has no job protocol, and remains idle; execution remains disabled by default, and no generated code is executed, compiled, sandboxed at runtime, or evaluated. It does not calculate results, generate charts, or orchestrate an agent yet.
+**Phase 5.4 — Timeouts and result capture.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interprets natural-language questions from bounded schema and aggregate statistics, without sending full CSV contents or raw row values, and returns a validated structured interpretation with clarifications and limitations. The code-generation endpoint returns proposed pandas analysis code as untrusted text. Phases 5.1–5.3 define the execution contracts, worker image, and centralized Docker sandbox policy. Phase 5.4 adds an opt-in Docker-only execution service with generated IDs, status/cancel/result endpoints, timeout enforcement, bounded separate stdout/stderr, safe JSON/tabular result capture, metadata, and cleanup. Generated code is never executed in the FastAPI process. Execution remains disabled by default and requires Docker plus the worker image. No AST-based security validator, job queue, persistence, agent self-correction, or chart rendering is implemented.
 
 ## Planned technology stack
 
 - **Frontend:** Next.js, TypeScript, and Tailwind CSS
 - **Backend:** Python and FastAPI
 - **Data analysis:** Python and pandas
-- **Future execution:** a technology-independent execution-service contract, an isolated worker image, and a centralized sandbox policy; no runtime sandbox enforcement, job protocol, or code execution path exists yet
+- **Execution:** opt-in Docker-only execution using the Phase 5.3 sandbox policy; disabled by default and not backed by a queue or persistent job store
 - **Language model:** Google Gemini through the official `google-genai` Python SDK, behind a provider-independent client interface, with an explicit deterministic mock provider for local development and tests
 
 ## Repository layout
 
 - `frontend/` — Next.js App Router application with TypeScript, Tailwind CSS, ESLint, and a backend connection check; see [`frontend/README.md`](frontend/README.md).
 - `backend/` — Python and FastAPI application with versioned health, CSV upload/validation, and paginated preview endpoints using private local temporary storage. See [`backend/README.md`](backend/README.md).
-- `backend/execution_worker/` — isolated, non-root Docker runtime image plus verification scripts for future pandas analysis execution; it does not execute code or connect to the API yet. See [`backend/execution_worker/README.md`](backend/execution_worker/README.md).
+- `backend/execution_worker/` — isolated, non-root Docker runtime image, bounded Python runner, and sandbox verification scripts. See [`backend/execution_worker/README.md`](backend/execution_worker/README.md).
 - `backend/app/core/sandbox.py` — centralized Phase 5.3 Docker sandbox policy, validated container spec, naming/labels, cleanup helpers, and termination classification.
 - `backend/app/services/sandbox_config.py` — sandbox configuration service with timeout caps and structured termination errors.
 - `docs/` — project architecture and development documentation.
@@ -27,7 +27,7 @@ The `docs/` directory is reserved for project architecture and development docum
 
 ## Prerequisites for future development
 
-Install Git, Node.js 20.9 or later with npm, and Python 3.9 or later with pip. Docker is optional and is needed only to build the Phase 5.2 worker image and run Docker-backed Phase 5.3 sandbox verification. The frontend lockfile is npm lockfile version 3; use npm for reproducible installs.
+Install Git, Node.js 20.9 or later with npm, and Python 3.9 or later with pip. Docker is optional when execution is disabled; it is required to build the worker image, run sandbox verification, and execute Phase 5.4 workloads. The frontend lockfile is npm lockfile version 3; use npm for reproducible installs.
 
 ## Local development setup
 
@@ -94,7 +94,7 @@ See the frontend and backend READMEs for environment setup and platform-specific
 
 ## Environment configuration
 
-`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS`, the optional Gemini provider settings, disabled-by-default execution limits, and the Phase 5.3 `SANDBOX_*` policy. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. The Phase 5.2 worker image requires no environment file, API key, database connection, or runtime package installation. `GEMINI_API_KEY` is backend-only and is required only when the Gemini provider handles natural-language question interpretation and pandas code generation; `LLM_PROVIDER=mock` needs no key or network. Health, upload, profiling, quality, and analytics do not use an LLM. See the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
+`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS`, optional Gemini provider settings, disabled-by-default execution limits, result byte/row ceilings, and the `SANDBOX_*` policy. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. The Phase 5.2 worker image requires no environment file, API key, database connection, or runtime package installation. `GEMINI_API_KEY` is backend-only and is required only when the Gemini provider handles natural-language question interpretation and pandas code generation; `LLM_PROVIDER=mock` needs no key or network. Health, upload, profiling, quality, and analytics do not use an LLM. See the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
 
 ## Integration troubleshooting
 
@@ -109,7 +109,7 @@ See the frontend and backend READMEs for environment setup and platform-specific
 - Use environment variables for configuration; never commit secrets.
 - Validate inputs at application boundaries.
 - Add tests alongside future functionality.
-- Keep data-analysis execution isolated from the main API process. The Phase 5.2 worker image is a runtime boundary, and Phase 5.3 defines the sandbox policy a future runtime must apply; neither executes generated code yet.
+- Keep data-analysis execution isolated from the main API process. Generated analysis must run only in the Docker worker under the Phase 5.3 sandbox policy; never add a host-process fallback.
 - Prefer small, focused changes and give modules clear responsibilities.
 
 ## Git and secret management
@@ -139,8 +139,9 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 19. **Phase 4.5 — LLM reliability and usage:** standardize provider error codes and HTTP mappings, add bounded retries with jitter, normalize token usage, keep logs safe, and provide a deterministic mock provider. (Complete.)
 20. **Phase 5.1 — Execution interface:** define technology-independent execution request, status, result, output, and structured-error contracts plus an execution-service abstraction without implementing code execution. (Complete.)
 21. **Phase 5.2 — Docker worker image:** build and verify an isolated non-root Python runtime with pinned analytics dependencies, startup health verification, and graceful shutdown, without connecting it to the API or executing code. (Complete.)
-22. **Phase 5.3 — Sandbox security configuration:** centralize and verify the Docker security policy, network isolation, filesystem restrictions, resource limits, and cleanup strategy, without executing code or connecting the worker to the API. (Complete; configuration and verification only.)
-23. **Question-and-answer experience:** validate and safely execute generated analysis, then connect results to chart generation.
-24. **Reliability and refinement:** improve error correction, testing, and user experience.
+22. **Phase 5.3 — Sandbox security configuration:** centralize and verify Docker security policy, network isolation, filesystem restrictions, resource limits, and cleanup helpers. (Complete.)
+23. **Phase 5.4 — Timeouts and result capture:** add Docker-only execution lifecycle, bounded timeout/output/result capture, metadata, API integration, and container cleanup without executing generated code in the backend. (Complete; execution remains disabled by default.)
+24. **Question-and-answer experience:** connect generated analysis results to chart generation and user workflows.
+25. **Reliability and refinement:** improve error correction, testing, and user experience.
 
-Later phases are planned only; none of their functionality is present yet. Local temporary file storage is not production dataset storage. The Phase 5.1 execution contracts, Phase 5.2 worker image, and Phase 5.3 sandbox policy do not provide runtime sandbox enforcement, an execution protocol, or an API-to-Docker execution path.
+Later phases are planned only; chart rendering and agent orchestration are not implemented. Local temporary file storage and in-memory execution state are not production persistence. Docker isolation is a defense-in-depth boundary, not a proof of arbitrary Python safety.

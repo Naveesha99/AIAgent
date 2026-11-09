@@ -45,11 +45,30 @@ class ExecutionService(ABC):
     async def execute(self, request: ExecutionRequest) -> ExecutionResult:
         """Execute one validated request and return a validated result."""
 
+    async def submit(self, request: ExecutionRequest) -> UUID:
+        """Submit work and return its generated identifier when supported."""
+        raise ExecutionEngineUnavailableError(
+            _engine_unavailable_error(
+                "Asynchronous execution submission is not supported by this engine."
+            )
+        )
+
     async def get_status(self, execution_id: UUID) -> ExecutionStatus:
         """Return status when the implementation supports status lookup."""
         raise ExecutionEngineUnavailableError(
             _engine_unavailable_error(
                 "Execution status lookup is not supported by this engine."
+            )
+        )
+
+    async def get_result(
+        self,
+        execution_id: UUID,
+    ) -> Optional[ExecutionResult]:
+        """Return a terminal result, or None while execution is in progress."""
+        raise ExecutionEngineUnavailableError(
+            _engine_unavailable_error(
+                "Execution result lookup is not supported by this engine."
             )
         )
 
@@ -83,6 +102,14 @@ class UnavailableExecutionService(ExecutionService):
             self._error("Execution status lookup")
         )
 
+    async def get_result(
+        self,
+        execution_id: UUID,
+    ) -> Optional[ExecutionResult]:
+        raise ExecutionEngineUnavailableError(
+            self._error("Execution result lookup")
+        )
+
     async def cancel(self, execution_id: UUID) -> ExecutionResult:
         raise ExecutionEngineUnavailableError(
             self._error("Execution cancellation")
@@ -101,9 +128,11 @@ def create_execution_service(
         return UnavailableExecutionService(
             "Execution is disabled by server configuration."
         )
-    return UnavailableExecutionService(
-        "No execution engine implementation is configured."
+    from app.services.docker_execution_service import (
+        DockerSandboxExecutionService,
     )
+
+    return DockerSandboxExecutionService(settings)
 
 
 ExecutionEngine = ExecutionService

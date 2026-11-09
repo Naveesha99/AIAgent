@@ -2,13 +2,13 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
-Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. Phase 5.1 defines technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Phase 5.2 adds an isolated, non-root Docker worker image with pinned pandas and NumPy runtime dependencies, startup health verification, and graceful shutdown. Phase 5.3 adds a centralized, validated Docker sandbox policy for future untrusted Python execution: non-root containers, no privileged mode, all capabilities dropped, no-new-privileges, default seccomp, no network, read-only root, one read-only dataset mount, bounded temporary storage, and CPU, memory, swap, process, timeout, and output limits. The policy is configuration and verification only. Execution remains disabled by default, no execution API route is exposed, the worker does not accept jobs or execute code, and no generated code is compiled, sandboxed at runtime, or evaluated. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. Phase 5.1 defines technology-independent execution request, status, result, output, and structured-error contracts. Phase 5.2 adds an isolated, non-root Docker worker image. Phase 5.3 adds a centralized, validated Docker sandbox policy. Phase 5.4 connects that policy to a Docker-only execution service with generated IDs, lifecycle/status/cancel/result endpoints, enforced timeout, bounded separate stdout/stderr, safe JSON/tabular result serialization, metadata, and cleanup. Execution is still disabled by default and requires an available Docker daemon and worker image. Generated code is not executed in the FastAPI process. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; generated code is untrusted, and no AST-based code security validator, job queue, persistence, agent self-correction, or chart renderer is implemented.
 
 ## Requirements
 
 - Python 3.9 or later
 - pip (included with Python)
-- Docker, only for building the optional Phase 5.2 worker image and for Docker-backed Phase 5.3 sandbox verification
+- Docker, for building the Phase 5.2 worker image, Phase 5.3 verification, and Phase 5.4 container execution
 
 The project dependencies are pinned in `pyproject.toml`. The `.venv/` virtual environment is local and ignored by Git.
 
@@ -1145,11 +1145,11 @@ A clarification response uses `status: "clarification_needed"` and a `clarificat
 
 ### Validation is not a code security boundary
 
-Pydantic validates data shape, types, bounds, and schema membership. It does not make generated Python safe. Phase 4.4 does not use `eval`, `exec`, or `compile`, does not parse or sandbox generated code, does not execute it, and does not assume that a valid `GeneratedCode` object is safe to run. AST analysis, import allowlists, process isolation, and execution limits remain a future execution-engine concern. Tool requests are likewise validated as data only and are not executed.
+Pydantic validates data shape, types, bounds, and schema membership. It does not make generated Python safe. Phase 4.4 returns generated code as untrusted text; Phase 5.4 executes it only inside a Docker container with the Phase 5.3 restrictions and bounded resources. No AST-based code validator or import allowlist exists, so schema validity is not a code security boundary. Tool requests are likewise validated as data only and are not executed.
 
 ## Execution interface
 
-Phase 5.1 defines contracts only. There is no execution endpoint, worker, subprocess, Docker container, AST validator, runtime sandbox, or `exec`/`eval`/`compile` path. Phase 5.3 adds sandbox configuration and verification, but still no executor. `EXECUTION_ENABLED` remains `false` by default, and enabling it does not install an executor. The service factory always returns an explicit unavailable placeholder until a future phase supplies an implementation.
+Phase 5.1 defines technology-independent execution contracts; Phase 5.2 provides the worker image; Phase 5.3 centralizes sandbox policy; and Phase 5.4 implements isolated Docker execution. `EXECUTION_ENABLED` remains `false` by default. When enabled, generated code is compiled and executed only by `worker.execute` inside a restricted container; the backend never runs generated code directly. No AST-based security validator is implemented, so Docker containment and strict resource limits are essential.
 
 ### Execution request
 
@@ -1188,7 +1188,7 @@ running -> completed, failed, timed_out, cancelled
 completed, failed, timed_out, cancelled, rejected -> terminal
 ```
 
-Terminal statuses have no normal outgoing transitions. `completed` requires a non-null JSON `result` and no error. `failed`, `timed_out`, and `rejected` require a structured error. `rejected` may only report a pre-execution error. A timed-out result must report the `execution_timeout` code and category. Non-terminal states cannot contain completion data, a result, or an error.
+Terminal statuses have no normal outgoing transitions. `completed` requires a JSON `result` field (which may explicitly contain `null`) and no error. `failed`, `timed_out`, and `rejected` require a structured error. `rejected` may only report a pre-execution error. A timed-out result must report the `execution_timeout` code and category. Non-terminal states cannot contain completion data, a result, or an error.
 
 ### Execution result and output
 
@@ -1224,7 +1224,7 @@ Terminal statuses have no normal outgoing transitions. `completed` requires a no
 }
 ```
 
-`ExecutionOutput` represents either captured stream. `content` preserves line breaks and diagnostics, `truncated` records whether the future engine clipped it, and `original_size_bytes` records the pre-truncation size when known. The result validator enforces `EXECUTION_MAX_STDOUT_BYTES` and `EXECUTION_MAX_STDERR_BYTES`; oversized streams are rejected, so a future engine must use the provided `bounded_execution_output(content, max_bytes)` helper before constructing a result. The helper clips on UTF-8 boundaries and never splits a multibyte character.
+`ExecutionOutput` represents either captured stream. `content` preserves line breaks and diagnostics, `truncated` records whether the worker/backend clipped it, and `original_size_bytes` records the pre-truncation size when known. The Docker runtime enforces independent `EXECUTION_MAX_STDOUT_BYTES` and `EXECUTION_MAX_STDERR_BYTES` bounds while draining output; `bounded_execution_output(content, max_bytes)` remains available for other service implementations.
 
 Timestamps must include an offset or timezone. Completion cannot precede start, durations and resource values must be non-negative, and the entire result must serialize to finite standard JSON under the absolute result-size ceiling. Internal paths, environment data, provider internals, and arbitrary engine objects are not part of the schema.
 
@@ -1256,15 +1256,38 @@ Error messages are sanitized to remove stack traces, internal absolute paths, en
 - `get_status(execution_id: UUID) -> ExecutionStatus`
 - `cancel(execution_id: UUID) -> ExecutionResult`
 
-`execute` is abstract. The default `get_status` and `cancel` implementations raise `ExecutionEngineUnavailableError` with an explicit `execution_engine_unavailable` structured error, so a future engine can implement only the operations it supports. `UnavailableExecutionService` implements all methods by raising that same explicit error and never claims to have executed code.
+`execute` is abstract. The default `submit`, `get_status`, `get_result`, and `cancel` implementations raise `ExecutionEngineUnavailableError` with an explicit `execution_engine_unavailable` structured error. `UnavailableExecutionService` implements all methods by raising that same explicit error and never claims to have executed code.
 
-`create_execution_service(settings, engine=None)` returns an injected future engine when provided. Otherwise it returns `UnavailableExecutionService`, whether execution is disabled or merely enabled without an installed implementation. There is intentionally no fake executor in production code.
+`create_execution_service(settings, engine=None)` returns an injected engine when provided, an unavailable placeholder when execution is disabled, or `DockerSandboxExecutionService` when enabled. The Docker implementation is lazy-imported so deployments that keep execution disabled do not need to start Docker.
 
-A future Docker-based engine can implement `ExecutionService` without changing these schemas: validate the request again against current settings, start or enqueue a bounded worker, return a result carrying the same IDs and statuses, truncate stdout/stderr with the helper before creating `ExecutionOutput`, measure duration/resource usage, and expose only safe `ExecutionError` values. The API layer and Pydantic contracts will not need to know about Docker, subprocesses, or worker internals.
+The Docker service validates again against current settings, stages only the requested dataset into a private per-execution temporary directory, starts one container using the validated sandbox spec, and returns only safe `ExecutionResult` and `ExecutionError` values. The API layer and Pydantic contracts do not expose Docker arguments, host paths, or container internals.
+
+## Docker execution runtime (Phase 5.4)
+
+The API is mounted at `/api/v1/executions` when `EXECUTION_ENABLED=true`:
+
+| Method and path | Behavior |
+| --- | --- |
+| `POST /api/v1/executions` | Validate request, generate an execution UUID, submit the task, return `202` with the ID and initial status. |
+| `GET /api/v1/executions/{execution_id}` | Return the latest status. |
+| `GET /api/v1/executions/{execution_id}/result` | Return `202` and current status while active; return the structured terminal `ExecutionResult` when complete. |
+| `POST /api/v1/executions/{execution_id}/cancel` | Kill a live container and return the terminal result; repeated calls after termination return the existing result. |
+
+Statuses are `pending`, `queued`, `running`, `completed`, `failed`, `timed_out`, `cancelled`, and `rejected`. Illegal transitions are rejected. A request-provided execution ID is not accepted by the HTTP route; container identity and labels are derived from the server-generated UUID.
+
+The maximum run time is the minimum of the request timeout, `EXECUTION_MAX_TIMEOUT_SECONDS`, and `SANDBOX_EXECUTION_TIMEOUT_SECONDS`. The backend enforces this wall-clock deadline, issues `docker kill --signal=KILL`, drains already-produced protocol frames, then force-removes the exact generated container. Timeout (`timed_out` / `execution_timeout`) is distinct from Docker-reported OOM/resource exhaustion (`failed` / `resource_limit_exceeded`). Docker may not identify every CPU, PID, or tmpfs termination reason.
+
+The worker exposes the dataset as pandas `df`; generated code must assign its final output to `result`. stdout and stderr are separately captured and truncated to the stricter of the execution and sandbox byte limits, with line breaks, truncation flags, and original byte counts preserved. Worker protocol frames are streamed and bounded; Docker CLI diagnostics are not included in user program streams.
+
+Results accept JSON null, booleans, finite numbers, strings, lists/tuples, string-keyed dictionaries, pandas DataFrames, and Series. DataFrames become `{ "columns": [...], "records": [...] }`; Series become `{ "name": ..., "values": [...] }`. `EXECUTION_MAX_RESULT_BYTES` defaults to 2,000,000 bytes and `EXECUTION_MAX_RESULT_ROWS` to 1,000. Oversized results or row counts map to `output_limit_exceeded`; unsupported objects, non-finite numbers, missing results, and serialization errors map to `execution_failed`. Results are never returned as arbitrary Python objects.
+
+Each execution receives a private staged copy of its dataset, mounted read-only. The service uses a generated container name and labels, cleans up the container on all terminal paths, and logs cleanup failures without replacing the original error. Execution state and results are held in memory; terminal history is pruned toward 1,000 records, while active records are retained. There is no persistence, queue, concurrency admission control, or periodic orphan sweep. A process or daemon crash can therefore lose execution records or leave a labeled container for operator reconciliation.
+
+Examples of successful, failed, and timed-out responses plus worker protocol and operational details are documented in [`execution_worker/README.md`](./execution_worker/README.md).
 
 ## Sandbox configuration (Phase 5.3)
 
-Phase 5.3 centralizes the Docker sandbox policy that a future execution runtime must apply to each untrusted Python run. It does not execute code, start job containers, expose an execution API, or connect the worker to the backend. The implementation lives in:
+Phase 5.3 centralized the Docker sandbox policy, and Phase 5.4 applies it to the execution runtime. The implementation lives in:
 
 - `app/core/sandbox.py` — constants, validated mount/limit/spec models, container naming and labels, cleanup and sweep argument builders, and termination classification.
 - `app/core/config.py` — `SANDBOX_*` settings and startup validation.
@@ -1285,12 +1308,12 @@ The policy builds a `SandboxContainerSpec` with generated container identity and
 | CPU | `1.0` | Docker CPU quota. |
 | Processes | `64` | Docker PID limit; host PID/IPC namespaces are never used. |
 | Open files / core | `256` / `0` | Conservative per-process limits. |
-| Wall-clock timeout | `30s` | A future runtime must enforce it and clamp requests to the hard limit. |
-| Output | `100000` / `50000` bytes | A future runtime must truncate before building a result. |
+| Wall-clock timeout | `30s` | Backend-enforced deadline, clamped to request and execution maximum. |
+| Output | `100000` / `50000` bytes | Independent stdout/stderr bounds, enforced while streaming and retaining output. |
 
-Container names use `ai-data-analyst-sandbox-<canonical-execution-uuid>` and carry `ai-data-analyst.sandbox=true` plus `ai-data-analyst.execution-id=<uuid>` labels. `sandbox_cleanup_args`, `sandbox_named_cleanup_args`, `sandbox_sweep_args`, and `sandbox_sweep_remove_args` provide label-scoped cleanup for a future runtime that removes its container in `finally` and reconciles orphans. They do not delete host files or run path-based removal.
+Container names use `ai-data-analyst-sandbox-<canonical-execution-uuid>` and carry `ai-data-analyst.sandbox=true` plus `ai-data-analyst.execution-id=<uuid>` labels. The service uses generated names and `sandbox_cleanup_args` to remove its own container in `finally`. `sandbox_named_cleanup_args`, `sandbox_sweep_args`, and `sandbox_sweep_remove_args` provide safe helpers for operator or future orphan reconciliation; no automatic sweep is implemented. Cleanup does not delete host files or unrelated containers.
 
-The policy forbids the Docker socket, host source/credential/config directories, sibling datasets, host ports, privileged mode, host PID/IPC/network namespaces, and secrets in environment variables. An input path is resolved and must remain inside the permitted dataset root; escaping symlinks and socket files are rejected. The mount currently references the validated dataset file directly, so a future runtime should consider staging a copy or using no-follow handling to close the path-validation-to-container-start gap.
+The policy forbids the Docker socket, host source/credential/config directories, sibling datasets, host ports, privileged mode, host PID/IPC/network namespaces, and secrets in environment variables. The runtime stages a private copy of the selected dataset before mounting it read-only, rather than exposing the backend storage directory.
 
 Verify the policy statically:
 
@@ -1350,7 +1373,7 @@ docker run --rm --entrypoint python ai-data-analyst-worker:dev -m pip list
 docker image inspect --format '{{.Size}}' ai-data-analyst-worker:dev
 ```
 
-The image alone is not a sandbox. Phase 5.2 provides the immutable runtime image; Phase 5.3 defines the read-only root filesystem, dropped capabilities, no-privileged-mode, no-Docker-socket, restricted-network, resource/storage, seccomp, and controlled-input policy that a future execution runtime must apply. There is still no execution protocol, job queue, result retrieval, API integration, AST validation, or runtime sandbox enforcement.
+The image alone is not a sandbox. Phase 5.2 provides the runtime image; Phase 5.3 defines the security policy; Phase 5.4 applies it through Docker for the execution API. There is no queue, persistence, AST-based code validator, agent self-correction, or chart rendering. Execution is opt-in and should be enabled only on a trusted host with a maintained Docker daemon.
 
 ## Run tests
 
@@ -1360,7 +1383,7 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–5.3 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, fake sleepers, and test-only service implementations, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage. Phase 5.2 tests statically verify the worker image configuration and run the worker entry point locally with a mocked health result; Docker image checks are performed separately by `execution_worker/verify_image.sh`. Phase 5.3 tests validate the sandbox policy statically; Docker-backed tests verify real host and runtime restrictions when Docker and the worker image are available, and otherwise skip.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–5.4 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, fake sleepers, and mocked Docker subprocesses, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage. Phase 5.2 tests statically verify the worker image configuration and run the worker entry point locally with a mocked health result; Docker image checks are performed separately by `execution_worker/verify_image.sh`. Phase 5.3 tests validate sandbox policy statically and against Docker when available. Phase 5.4 tests use Docker mocks for lifecycle behavior and run controlled execution, timeout, and result checks against real Docker when the daemon and image are available; integration tests otherwise skip.
 
 Run only the Phase 5.3 sandbox tests with:
 
@@ -1373,6 +1396,12 @@ Run the standalone Docker sandbox verifier with:
 
 ```bash
 python execution_worker/verify_sandbox.py --build
+```
+
+Run the Phase 5.4 execution lifecycle tests with:
+
+```bash
+pytest tests/test_phase54_execution.py
 ```
 
 Run only the Phase 5.2 worker-image tests with:

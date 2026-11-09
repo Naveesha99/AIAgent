@@ -39,6 +39,7 @@ from app.services.execution_service import (
     UnavailableExecutionService,
     create_execution_service,
 )
+from app.services.docker_execution_service import DockerSandboxExecutionService
 
 client = TestClient(app)
 
@@ -601,13 +602,16 @@ def test_execution_result_rejects_non_json_values() -> None:
         )
 
 
+def test_completed_execution_may_return_json_null() -> None:
+    result = ExecutionResult.from_payload(result_payload(result=None))
+
+    assert result.status is ExecutionStatus.COMPLETED
+    assert result.result is None
+
+
 @pytest.mark.parametrize(
     "overrides",
     [
-        {
-            "status": "completed",
-            "result": None,
-        },
         {
             "status": "completed",
             "result": {},
@@ -809,15 +813,11 @@ def test_execution_is_disabled_by_default_and_factory_is_unavailable() -> None:
         asyncio.run(service.execute(request))
 
 
-def test_enabling_configuration_does_not_create_an_executor() -> None:
+def test_enabling_configuration_creates_the_docker_executor() -> None:
     settings = Settings(_env_file=None, execution_enabled=True)
     service = create_execution_service(settings)
-    request = ExecutionRequest.from_payload(request_payload())
 
-    assert isinstance(service, UnavailableExecutionService)
-    with pytest.raises(ExecutionEngineUnavailableError) as caught:
-        asyncio.run(service.execute(request))
-    assert "No execution engine implementation" in caught.value.error.message
+    assert isinstance(service, DockerSandboxExecutionService)
 
 
 def test_execution_factory_accepts_an_future_engine() -> None:
@@ -827,8 +827,17 @@ def test_execution_factory_accepts_an_future_engine() -> None:
     assert create_execution_service(settings, engine=engine) is engine
 
 
-def test_no_execution_api_route_is_exposed() -> None:
-    assert client.post("/api/v1/executions").status_code == 404
+def test_execution_api_route_is_gated_when_execution_is_disabled() -> None:
+    response = client.post(
+        "/api/v1/executions",
+        json={
+            "dataset_id": dataset_id(),
+            "code": "result = df.shape",
+            "timeout_seconds": 10,
+        },
+    )
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "execution_engine_unavailable"
     assert client.post(
         f"/api/v1/datasets/{dataset_id()}/execute"
     ).status_code == 404

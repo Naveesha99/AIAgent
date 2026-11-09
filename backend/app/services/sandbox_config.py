@@ -1,8 +1,8 @@
 """Reusable service wrapper for the centralized sandbox policy.
 
 This service resolves application settings into a validated Docker sandbox
-policy and defines bounded timeout and structured-error behavior for a future
-execution runtime. It does not launch containers or execute code.
+policy and defines bounded timeout and structured-error behavior for the
+Docker execution runtime.
 """
 
 from __future__ import annotations

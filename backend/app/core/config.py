@@ -9,10 +9,14 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.core.execution_limits import (
     ABSOLUTE_EXECUTION_MAX_CODE_SIZE_BYTES,
+    ABSOLUTE_EXECUTION_MAX_RESULT_BYTES,
+    ABSOLUTE_EXECUTION_MAX_RESULT_ROWS,
     ABSOLUTE_EXECUTION_MAX_STDERR_BYTES,
     ABSOLUTE_EXECUTION_MAX_STDOUT_BYTES,
     ABSOLUTE_EXECUTION_MAX_TIMEOUT_SECONDS,
     DEFAULT_EXECUTION_MAX_CODE_SIZE_BYTES,
+    DEFAULT_EXECUTION_MAX_RESULT_BYTES,
+    DEFAULT_EXECUTION_MAX_RESULT_ROWS,
     DEFAULT_EXECUTION_MAX_STDERR_BYTES,
     DEFAULT_EXECUTION_MAX_STDOUT_BYTES,
     DEFAULT_EXECUTION_MAX_TIMEOUT_SECONDS,
@@ -103,6 +107,16 @@ class Settings(BaseSettings):
         default=DEFAULT_EXECUTION_MAX_STDERR_BYTES,
         gt=0,
         le=ABSOLUTE_EXECUTION_MAX_STDERR_BYTES,
+    )
+    execution_max_result_bytes: int = Field(
+        default=DEFAULT_EXECUTION_MAX_RESULT_BYTES,
+        gt=0,
+        le=ABSOLUTE_EXECUTION_MAX_RESULT_BYTES,
+    )
+    execution_max_result_rows: int = Field(
+        default=DEFAULT_EXECUTION_MAX_RESULT_ROWS,
+        gt=0,
+        le=ABSOLUTE_EXECUTION_MAX_RESULT_ROWS,
     )
     sandbox_worker_image: str = Field(
         default=DEFAULT_SANDBOX_IMAGE,
