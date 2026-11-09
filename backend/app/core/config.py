@@ -18,6 +18,30 @@ from app.core.execution_limits import (
     DEFAULT_EXECUTION_MAX_TIMEOUT_SECONDS,
 )
 from app.core.llm_scenarios import DEFAULT_MOCK_SCENARIO, MOCK_SCENARIOS
+from app.core.sandbox import (
+    DEFAULT_SANDBOX_CPU_LIMIT,
+    DEFAULT_SANDBOX_EXECUTION_TIMEOUT_SECONDS,
+    DEFAULT_SANDBOX_IMAGE,
+    DEFAULT_SANDBOX_MAX_STDERR_BYTES,
+    DEFAULT_SANDBOX_MAX_STDOUT_BYTES,
+    DEFAULT_SANDBOX_MEMORY_LIMIT,
+    DEFAULT_SANDBOX_PIDS_LIMIT,
+    DEFAULT_SANDBOX_TMP_SIZE,
+    MAX_SANDBOX_CPU_LIMIT,
+    MAX_SANDBOX_EXECUTION_TIMEOUT_SECONDS,
+    MAX_SANDBOX_MEMORY_BYTES,
+    MAX_SANDBOX_PIDS_LIMIT,
+    MAX_SANDBOX_STDERR_BYTES,
+    MAX_SANDBOX_STDOUT_BYTES,
+    MAX_SANDBOX_TMP_BYTES,
+    MIN_SANDBOX_CPU_LIMIT,
+    MIN_SANDBOX_MEMORY_BYTES,
+    MIN_SANDBOX_PIDS_LIMIT,
+    MIN_SANDBOX_TMP_BYTES,
+    normalize_docker_size,
+    parse_docker_size,
+    validate_sandbox_image,
+)
 
 
 BACKEND_ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
@@ -80,6 +104,41 @@ class Settings(BaseSettings):
         gt=0,
         le=ABSOLUTE_EXECUTION_MAX_STDERR_BYTES,
     )
+    sandbox_worker_image: str = Field(
+        default=DEFAULT_SANDBOX_IMAGE,
+        min_length=1,
+    )
+    sandbox_network_mode: Literal["none"] = "none"
+    sandbox_read_only_root: bool = True
+    sandbox_seccomp_profile: Literal["default"] = "default"
+    sandbox_memory_limit: str = Field(default=DEFAULT_SANDBOX_MEMORY_LIMIT)
+    sandbox_memory_swap_limit: Optional[str] = None
+    sandbox_cpu_limit: float = Field(
+        default=DEFAULT_SANDBOX_CPU_LIMIT,
+        ge=MIN_SANDBOX_CPU_LIMIT,
+        le=MAX_SANDBOX_CPU_LIMIT,
+    )
+    sandbox_pids_limit: int = Field(
+        default=DEFAULT_SANDBOX_PIDS_LIMIT,
+        ge=MIN_SANDBOX_PIDS_LIMIT,
+        le=MAX_SANDBOX_PIDS_LIMIT,
+    )
+    sandbox_tmp_size: str = Field(default=DEFAULT_SANDBOX_TMP_SIZE)
+    sandbox_execution_timeout_seconds: float = Field(
+        default=DEFAULT_SANDBOX_EXECUTION_TIMEOUT_SECONDS,
+        gt=0,
+        le=MAX_SANDBOX_EXECUTION_TIMEOUT_SECONDS,
+    )
+    sandbox_max_stdout_bytes: int = Field(
+        default=DEFAULT_SANDBOX_MAX_STDOUT_BYTES,
+        gt=0,
+        le=MAX_SANDBOX_STDOUT_BYTES,
+    )
+    sandbox_max_stderr_bytes: int = Field(
+        default=DEFAULT_SANDBOX_MAX_STDERR_BYTES,
+        gt=0,
+        le=MAX_SANDBOX_STDERR_BYTES,
+    )
 
     @field_validator("llm_provider", mode="before")
     @classmethod
@@ -118,6 +177,77 @@ class Settings(BaseSettings):
                 )
             return scenario
         return value
+
+    @field_validator("sandbox_worker_image", mode="before")
+    @classmethod
+    def normalize_sandbox_worker_image(cls, value: object) -> str:
+        """Require a single safe Docker worker image reference."""
+        return validate_sandbox_image(value)
+
+    @field_validator("sandbox_read_only_root")
+    @classmethod
+    def require_sandbox_read_only_root(cls, value: bool) -> bool:
+        """The execution container root filesystem must remain read-only."""
+        if value is not True:
+            raise ValueError("SANDBOX_READ_ONLY_ROOT must be true.")
+        return value
+
+    @field_validator("sandbox_memory_limit", mode="before")
+    @classmethod
+    def validate_sandbox_memory_limit(cls, value: object) -> str:
+        """Validate the Docker memory limit and normalize its units."""
+        return normalize_docker_size(
+            value,
+            label="SANDBOX_MEMORY_LIMIT",
+            minimum=MIN_SANDBOX_MEMORY_BYTES,
+            maximum=MAX_SANDBOX_MEMORY_BYTES,
+        )
+
+    @field_validator("sandbox_memory_swap_limit", mode="before")
+    @classmethod
+    def validate_sandbox_memory_swap_limit(
+        cls,
+        value: object,
+    ) -> Optional[str]:
+        """Validate the optional swap limit; empty means equal to memory."""
+        if value is None or value == "":
+            return None
+        return normalize_docker_size(
+            value,
+            label="SANDBOX_MEMORY_SWAP_LIMIT",
+            minimum=MIN_SANDBOX_MEMORY_BYTES,
+            maximum=MAX_SANDBOX_MEMORY_BYTES,
+        )
+
+    @field_validator("sandbox_tmp_size", mode="before")
+    @classmethod
+    def validate_sandbox_tmp_size(cls, value: object) -> str:
+        """Validate the bounded writable temporary filesystem size."""
+        return normalize_docker_size(
+            value,
+            label="SANDBOX_TMP_SIZE",
+            minimum=MIN_SANDBOX_TMP_BYTES,
+            maximum=MAX_SANDBOX_TMP_BYTES,
+        )
+
+    @model_validator(mode="after")
+    def validate_sandbox_swap_limit(self) -> "Settings":
+        """Keep the swap limit coherent with the memory limit."""
+        memory_bytes = parse_docker_size(
+            self.sandbox_memory_limit,
+            label="SANDBOX_MEMORY_LIMIT",
+        )
+        if self.sandbox_memory_swap_limit is not None:
+            swap_bytes = parse_docker_size(
+                self.sandbox_memory_swap_limit,
+                label="SANDBOX_MEMORY_SWAP_LIMIT",
+            )
+            if swap_bytes < memory_bytes:
+                raise ValueError(
+                    "SANDBOX_MEMORY_SWAP_LIMIT must be greater than or equal "
+                    "to SANDBOX_MEMORY_LIMIT."
+                )
+        return self
 
     @model_validator(mode="after")
     def validate_retry_delays(self) -> "Settings":

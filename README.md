@@ -4,28 +4,30 @@ An application planned to let users upload CSV files, ask questions in natural l
 
 ## Current status
 
-**Phase 5.2 — Docker worker image.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interprets natural-language questions from bounded schema and aggregate statistics, without sending full CSV contents or raw row values, and returns a validated structured interpretation with clarifications and limitations. The code-generation endpoint then returns proposed pandas analysis code as untrusted, structurally validated text. LLM failures use stable error codes, bounded retries with jitter, controlled HTTP mappings, safe structured logging, and normalized optional token usage; an explicit deterministic mock provider supports local use without a Gemini key or network. The backend also defines strict schemas for generated code, allowlisted tool requests, and the final agent response. Phase 5.1 adds technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Phase 5.2 adds an isolated non-root Docker worker image with pinned pandas and NumPy dependencies, a startup health check, and graceful shutdown. The worker is not connected to the API, has no job protocol, and remains idle; execution remains disabled by default, and no generated code is executed, compiled, sandboxed, or evaluated. It does not calculate results, generate charts, or orchestrate an agent yet.
+**Phase 5.3 — Sandbox security configuration.** The Next.js frontend includes a configurable API client, backend health check, accessible CSV upload, and paginated dataset preview. The backend validates bounded UTF-8 CSV uploads, stores them in private local temporary storage with a 24-hour default retention period, and provides dataset metadata, descriptive statistics, data quality findings, and reusable filtering, sorting, grouping, aggregation, and summarization. A provider-independent LLM client interprets natural-language questions from bounded schema and aggregate statistics, without sending full CSV contents or raw row values, and returns a validated structured interpretation with clarifications and limitations. The code-generation endpoint then returns proposed pandas analysis code as untrusted, structurally validated text. LLM failures use stable error codes, bounded retries with jitter, controlled HTTP mappings, safe structured logging, and normalized optional token usage; an explicit deterministic mock provider supports local use without a Gemini key or network. The backend also defines strict schemas for generated code, allowlisted tool requests, and the final agent response. Phase 5.1 adds technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Phase 5.2 adds an isolated non-root Docker worker image with pinned pandas and NumPy dependencies, a startup health check, and graceful shutdown. Phase 5.3 adds a centralized, validated Docker sandbox policy with non-root execution, dropped capabilities, no-new-privileges, default seccomp, no network, a read-only root, one read-only dataset mount, bounded temporary storage, and CPU, memory, swap, process, timeout, and output limits. The policy is configuration and verification only. The worker is not connected to the API, has no job protocol, and remains idle; execution remains disabled by default, and no generated code is executed, compiled, sandboxed at runtime, or evaluated. It does not calculate results, generate charts, or orchestrate an agent yet.
 
 ## Planned technology stack
 
 - **Frontend:** Next.js, TypeScript, and Tailwind CSS
 - **Backend:** Python and FastAPI
 - **Data analysis:** Python and pandas
-- **Future execution:** a technology-independent execution-service contract and an isolated worker image; no sandbox, job protocol, or code execution path exists yet
+- **Future execution:** a technology-independent execution-service contract, an isolated worker image, and a centralized sandbox policy; no runtime sandbox enforcement, job protocol, or code execution path exists yet
 - **Language model:** Google Gemini through the official `google-genai` Python SDK, behind a provider-independent client interface, with an explicit deterministic mock provider for local development and tests
 
 ## Repository layout
 
 - `frontend/` — Next.js App Router application with TypeScript, Tailwind CSS, ESLint, and a backend connection check; see [`frontend/README.md`](frontend/README.md).
 - `backend/` — Python and FastAPI application with versioned health, CSV upload/validation, and paginated preview endpoints using private local temporary storage. See [`backend/README.md`](backend/README.md).
-- `backend/execution_worker/` — isolated, non-root Docker runtime image for future pandas analysis execution; it does not execute code or connect to the API yet. See [`backend/execution_worker/README.md`](backend/execution_worker/README.md).
+- `backend/execution_worker/` — isolated, non-root Docker runtime image plus verification scripts for future pandas analysis execution; it does not execute code or connect to the API yet. See [`backend/execution_worker/README.md`](backend/execution_worker/README.md).
+- `backend/app/core/sandbox.py` — centralized Phase 5.3 Docker sandbox policy, validated container spec, naming/labels, cleanup helpers, and termination classification.
+- `backend/app/services/sandbox_config.py` — sandbox configuration service with timeout caps and structured termination errors.
 - `docs/` — project architecture and development documentation.
 
 The `docs/` directory is reserved for project architecture and development documentation.
 
 ## Prerequisites for future development
 
-Install Git, Node.js 20.9 or later with npm, and Python 3.9 or later with pip. Docker is optional and is needed only to build and verify the Phase 5.2 worker image. The frontend lockfile is npm lockfile version 3; use npm for reproducible installs.
+Install Git, Node.js 20.9 or later with npm, and Python 3.9 or later with pip. Docker is optional and is needed only to build the Phase 5.2 worker image and run Docker-backed Phase 5.3 sandbox verification. The frontend lockfile is npm lockfile version 3; use npm for reproducible installs.
 
 ## Local development setup
 
@@ -83,6 +85,7 @@ The frontend listens at `http://localhost:3000`. Open it and select **Check back
 | Backend tests | `pytest` (`backend/`, with `.venv` active) |
 | Build worker image | `docker build --tag ai-data-analyst-worker:dev ./backend/execution_worker` |
 | Verify worker image | `./backend/execution_worker/verify_image.sh` |
+| Verify sandbox policy | `cd backend && .venv/bin/python execution_worker/verify_sandbox.py --build` |
 | Direct API health check | `curl http://127.0.0.1:8000/api/v1/health` |
 | Upload a CSV | `curl -X POST http://127.0.0.1:8000/api/v1/datasets/upload -F "file=@sample.csv"` |
 | Interactive API docs | Open `http://127.0.0.1:8000/docs` |
@@ -91,7 +94,7 @@ See the frontend and backend READMEs for environment setup and platform-specific
 
 ## Environment configuration
 
-`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS`, the optional Gemini provider settings, and disabled-by-default execution limits. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. The Phase 5.2 worker image requires no environment file, API key, database connection, or runtime package installation. `GEMINI_API_KEY` is backend-only and is required only when the Gemini provider handles natural-language question interpretation and pandas code generation; `LLM_PROVIDER=mock` needs no key or network. Health, upload, profiling, quality, and analytics do not use an LLM. See the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
+`frontend/.env.example` defines `NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000`. Copy it to `frontend/.env.local` if the local file does not already exist; Next.js reads environment files from the frontend project directory and must be restarted after changes. `backend/.env.example` documents backend settings, including `CORS_ORIGINS`, the optional Gemini provider settings, disabled-by-default execution limits, and the Phase 5.3 `SANDBOX_*` policy. Copy it to `backend/.env`; the backend loads that ignored local file automatically, and process environment variables take precedence. The root `.env.example` remains a repository-level reference and is not loaded automatically by either application. The Phase 5.2 worker image requires no environment file, API key, database connection, or runtime package installation. `GEMINI_API_KEY` is backend-only and is required only when the Gemini provider handles natural-language question interpretation and pandas code generation; `LLM_PROVIDER=mock` needs no key or network. Health, upload, profiling, quality, and analytics do not use an LLM. See the backend README for Gemini setup and troubleshooting. Never commit real credentials or put private keys in `NEXT_PUBLIC_` variables.
 
 ## Integration troubleshooting
 
@@ -106,7 +109,7 @@ See the frontend and backend READMEs for environment setup and platform-specific
 - Use environment variables for configuration; never commit secrets.
 - Validate inputs at application boundaries.
 - Add tests alongside future functionality.
-- Keep data-analysis execution isolated from the main API process; the Phase 5.2 worker image is a runtime boundary only, not a complete sandbox.
+- Keep data-analysis execution isolated from the main API process. The Phase 5.2 worker image is a runtime boundary, and Phase 5.3 defines the sandbox policy a future runtime must apply; neither executes generated code yet.
 - Prefer small, focused changes and give modules clear responsibilities.
 
 ## Git and secret management
@@ -136,7 +139,8 @@ Commit source code, documentation, and dependency manifests and lockfiles when t
 19. **Phase 4.5 — LLM reliability and usage:** standardize provider error codes and HTTP mappings, add bounded retries with jitter, normalize token usage, keep logs safe, and provide a deterministic mock provider. (Complete.)
 20. **Phase 5.1 — Execution interface:** define technology-independent execution request, status, result, output, and structured-error contracts plus an execution-service abstraction without implementing code execution. (Complete.)
 21. **Phase 5.2 — Docker worker image:** build and verify an isolated non-root Python runtime with pinned analytics dependencies, startup health verification, and graceful shutdown, without connecting it to the API or executing code. (Complete.)
-22. **Question-and-answer experience:** validate and safely execute generated analysis, then connect results to chart generation.
-23. **Reliability and refinement:** improve error correction, testing, and user experience.
+22. **Phase 5.3 — Sandbox security configuration:** centralize and verify the Docker security policy, network isolation, filesystem restrictions, resource limits, and cleanup strategy, without executing code or connecting the worker to the API. (Complete; configuration and verification only.)
+23. **Question-and-answer experience:** validate and safely execute generated analysis, then connect results to chart generation.
+24. **Reliability and refinement:** improve error correction, testing, and user experience.
 
-Later phases are planned only; none of their functionality is present yet. Local temporary file storage is not production dataset storage. The Phase 5.1 execution contracts and Phase 5.2 worker image do not provide an executable sandbox or an execution protocol.
+Later phases are planned only; none of their functionality is present yet. Local temporary file storage is not production dataset storage. The Phase 5.1 execution contracts, Phase 5.2 worker image, and Phase 5.3 sandbox policy do not provide runtime sandbox enforcement, an execution protocol, or an API-to-Docker execution path.

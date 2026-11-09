@@ -2,13 +2,13 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
-Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. Phase 5.1 defines technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Phase 5.2 adds an isolated, non-root Docker worker image with pinned pandas and NumPy runtime dependencies, startup health verification, and graceful shutdown. Execution remains disabled by default, no execution API route is exposed, the worker does not accept jobs or execute code, and no generated code is compiled, sandboxed, or evaluated. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. Phase 5.1 defines technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Phase 5.2 adds an isolated, non-root Docker worker image with pinned pandas and NumPy runtime dependencies, startup health verification, and graceful shutdown. Phase 5.3 adds a centralized, validated Docker sandbox policy for future untrusted Python execution: non-root containers, no privileged mode, all capabilities dropped, no-new-privileges, default seccomp, no network, read-only root, one read-only dataset mount, bounded temporary storage, and CPU, memory, swap, process, timeout, and output limits. The policy is configuration and verification only. Execution remains disabled by default, no execution API route is exposed, the worker does not accept jobs or execute code, and no generated code is compiled, sandboxed at runtime, or evaluated. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
 
 ## Requirements
 
 - Python 3.9 or later
 - pip (included with Python)
-- Docker, only for building and verifying the optional Phase 5.2 worker image
+- Docker, only for building the optional Phase 5.2 worker image and for Docker-backed Phase 5.3 sandbox verification
 
 The project dependencies are pinned in `pyproject.toml`. The `.venv/` virtual environment is local and ignored by Git.
 
@@ -82,6 +82,18 @@ export EXECUTION_MAX_TIMEOUT_SECONDS=30
 export EXECUTION_MAX_CODE_SIZE_BYTES=50000
 export EXECUTION_MAX_STDOUT_BYTES=100000
 export EXECUTION_MAX_STDERR_BYTES=50000
+export SANDBOX_WORKER_IMAGE=ai-data-analyst-worker:dev
+export SANDBOX_NETWORK_MODE=none
+export SANDBOX_READ_ONLY_ROOT=true
+export SANDBOX_SECCOMP_PROFILE=default
+export SANDBOX_MEMORY_LIMIT=512m
+# export SANDBOX_MEMORY_SWAP_LIMIT=512m
+export SANDBOX_CPU_LIMIT=1.0
+export SANDBOX_PIDS_LIMIT=64
+export SANDBOX_TMP_SIZE=64m
+export SANDBOX_EXECUTION_TIMEOUT_SECONDS=30
+export SANDBOX_MAX_STDOUT_BYTES=100000
+export SANDBOX_MAX_STDERR_BYTES=50000
 ```
 
 On Windows PowerShell:
@@ -117,6 +129,18 @@ $env:EXECUTION_MAX_TIMEOUT_SECONDS = "30"
 $env:EXECUTION_MAX_CODE_SIZE_BYTES = "50000"
 $env:EXECUTION_MAX_STDOUT_BYTES = "100000"
 $env:EXECUTION_MAX_STDERR_BYTES = "50000"
+$env:SANDBOX_WORKER_IMAGE = "ai-data-analyst-worker:dev"
+$env:SANDBOX_NETWORK_MODE = "none"
+$env:SANDBOX_READ_ONLY_ROOT = "true"
+$env:SANDBOX_SECCOMP_PROFILE = "default"
+$env:SANDBOX_MEMORY_LIMIT = "512m"
+# $env:SANDBOX_MEMORY_SWAP_LIMIT = "512m"
+$env:SANDBOX_CPU_LIMIT = "1.0"
+$env:SANDBOX_PIDS_LIMIT = "64"
+$env:SANDBOX_TMP_SIZE = "64m"
+$env:SANDBOX_EXECUTION_TIMEOUT_SECONDS = "30"
+$env:SANDBOX_MAX_STDOUT_BYTES = "100000"
+$env:SANDBOX_MAX_STDERR_BYTES = "50000"
 ```
 
 `APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `ANALYTICS_MAX_RESULT_ROWS` defaults to 1000 and caps filter/sort result rows. `ANALYTICS_MAX_GROUPS` defaults to 100 and caps returned groups. `ANALYTICS_MAX_VALUE_FREQUENCIES` defaults to 10 and caps categorical top values in summaries. `DATASET_STORAGE_DIR` defaults to `backend/data/datasets`; a relative override is resolved relative to the backend directory. `DATASET_TTL_HOURS` defaults to 24 hours. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
@@ -183,6 +207,18 @@ Defaults and validation:
 - `EXECUTION_MAX_CODE_SIZE_BYTES` defaults to `50000`, must be greater than `0`, and is capped at `1000000`.
 - `EXECUTION_MAX_STDOUT_BYTES` defaults to `100000`, must be greater than `0`, and is capped at `2000000`.
 - `EXECUTION_MAX_STDERR_BYTES` defaults to `50000`, must be greater than `0`, and is capped at `2000000`.
+- `SANDBOX_WORKER_IMAGE` defaults to `ai-data-analyst-worker:dev` and must be a safe Docker image reference.
+- `SANDBOX_NETWORK_MODE` must be `none`; bridge, host, overlay, and custom network modes are rejected.
+- `SANDBOX_READ_ONLY_ROOT` must be `true`; a writable root filesystem is rejected.
+- `SANDBOX_SECCOMP_PROFILE` must be `default`; `unconfined` and arbitrary profiles are rejected.
+- `SANDBOX_MEMORY_LIMIT` defaults to `512m` and must be between 64 MiB and 4 GiB. Docker size suffixes are supported.
+- `SANDBOX_MEMORY_SWAP_LIMIT` is optional. When unset it defaults to the memory limit, which disables swap. When set it must be at least the memory limit and at most 4 GiB.
+- `SANDBOX_CPU_LIMIT` defaults to `1.0` and must be between `0.1` and `4.0` CPUs.
+- `SANDBOX_PIDS_LIMIT` defaults to `64` and must be between `16` and `512`.
+- `SANDBOX_TMP_SIZE` defaults to `64m` and must be between 8 MiB and 1 GiB.
+- `SANDBOX_EXECUTION_TIMEOUT_SECONDS` defaults to `30` and must be greater than `0` and at most `600`. A request timeout is clamped to the smaller of the request, execution maximum, and sandbox hard timeout.
+- `SANDBOX_MAX_STDOUT_BYTES` defaults to `100000` and must be between `1` and `2000000`.
+- `SANDBOX_MAX_STDERR_BYTES` defaults to `50000` and must be between `1` and `2000000`.
 
 ### Choose an available model
 
@@ -1113,7 +1149,7 @@ Pydantic validates data shape, types, bounds, and schema membership. It does not
 
 ## Execution interface
 
-Phase 5.1 defines contracts only. There is no execution endpoint, worker, subprocess, Docker container, AST validator, sandbox, or `exec`/`eval`/`compile` path. `EXECUTION_ENABLED` remains `false` by default, and enabling it does not install an executor. The service factory always returns an explicit unavailable placeholder until a future phase supplies an implementation.
+Phase 5.1 defines contracts only. There is no execution endpoint, worker, subprocess, Docker container, AST validator, runtime sandbox, or `exec`/`eval`/`compile` path. Phase 5.3 adds sandbox configuration and verification, but still no executor. `EXECUTION_ENABLED` remains `false` by default, and enabling it does not install an executor. The service factory always returns an explicit unavailable placeholder until a future phase supplies an implementation.
 
 ### Execution request
 
@@ -1226,6 +1262,54 @@ Error messages are sanitized to remove stack traces, internal absolute paths, en
 
 A future Docker-based engine can implement `ExecutionService` without changing these schemas: validate the request again against current settings, start or enqueue a bounded worker, return a result carrying the same IDs and statuses, truncate stdout/stderr with the helper before creating `ExecutionOutput`, measure duration/resource usage, and expose only safe `ExecutionError` values. The API layer and Pydantic contracts will not need to know about Docker, subprocesses, or worker internals.
 
+## Sandbox configuration (Phase 5.3)
+
+Phase 5.3 centralizes the Docker sandbox policy that a future execution runtime must apply to each untrusted Python run. It does not execute code, start job containers, expose an execution API, or connect the worker to the backend. The implementation lives in:
+
+- `app/core/sandbox.py` — constants, validated mount/limit/spec models, container naming and labels, cleanup and sweep argument builders, and termination classification.
+- `app/core/config.py` — `SANDBOX_*` settings and startup validation.
+- `app/services/sandbox_config.py` — `SandboxConfigurationService`, effective timeout clamping, and structured timeout/resource/cancellation errors.
+
+The policy builds a `SandboxContainerSpec` with generated container identity and a fixed Docker command. Application code or an API request cannot supply a Docker image, network mode, capability, mount, environment map, or container name. The request contract rejects such fields, and the policy additionally refuses unsafe values.
+
+| Control | Default | Behavior |
+| --- | --- | --- |
+| User | `10001:10001` | Non-root execution; never privileged. |
+| Capabilities | Drop all | No added capabilities; `no-new-privileges` is always enabled. |
+| Seccomp | Docker default | `unconfined` and custom profiles are rejected. |
+| Network | `none` | No routes, DNS, published ports, host services, or internet. |
+| Root filesystem | read-only | `--read-only`; `/tmp` is the only writable location. |
+| Input | `/input/dataset.csv` | Exactly one validated read-only dataset file is mounted. |
+| Temporary storage | `64m` tmpfs | `rw,noexec,nosuid,nodev`, destroyed with the container. |
+| Memory | `512m` | Memory and swap are bounded; swap defaults to disabled. |
+| CPU | `1.0` | Docker CPU quota. |
+| Processes | `64` | Docker PID limit; host PID/IPC namespaces are never used. |
+| Open files / core | `256` / `0` | Conservative per-process limits. |
+| Wall-clock timeout | `30s` | A future runtime must enforce it and clamp requests to the hard limit. |
+| Output | `100000` / `50000` bytes | A future runtime must truncate before building a result. |
+
+Container names use `ai-data-analyst-sandbox-<canonical-execution-uuid>` and carry `ai-data-analyst.sandbox=true` plus `ai-data-analyst.execution-id=<uuid>` labels. `sandbox_cleanup_args`, `sandbox_named_cleanup_args`, `sandbox_sweep_args`, and `sandbox_sweep_remove_args` provide label-scoped cleanup for a future runtime that removes its container in `finally` and reconciles orphans. They do not delete host files or run path-based removal.
+
+The policy forbids the Docker socket, host source/credential/config directories, sibling datasets, host ports, privileged mode, host PID/IPC/network namespaces, and secrets in environment variables. An input path is resolved and must remain inside the permitted dataset root; escaping symlinks and socket files are rejected. The mount currently references the validated dataset file directly, so a future runtime should consider staging a copy or using no-follow handling to close the path-validation-to-container-start gap.
+
+Verify the policy statically:
+
+```bash
+cd backend
+python -m pytest -q tests/test_phase53_sandbox.py -k "not docker"
+```
+
+When Docker and the image are available, verify real host and runtime restrictions:
+
+```bash
+cd backend
+source .venv/bin/activate
+python execution_worker/verify_sandbox.py --build
+python -m pytest -q tests/test_phase53_sandbox.py -k docker
+```
+
+See [`execution_worker/README.md`](execution_worker/README.md) for the full architecture, defaults, verification output, cleanup strategy, and limitations. Passing these checks does not mean generated code can be executed securely; timeout/output enforcement, AST/policy validation, output sanitization, result mapping, cancellation, and API-to-Docker orchestration remain future work.
+
 ## Execution worker image
 
 Phase 5.2 adds an isolated runtime image under `execution_worker/`. It is not connected to the API and does not execute user-generated code. The container performs a startup health check and then remains idle until it receives `SIGTERM` or `SIGINT`. See [`execution_worker/README.md`](execution_worker/README.md) for full build, verification, restrictions, and troubleshooting details.
@@ -1266,7 +1350,7 @@ docker run --rm --entrypoint python ai-data-analyst-worker:dev -m pip list
 docker image inspect --format '{{.Size}}' ai-data-analyst-worker:dev
 ```
 
-The image alone is not a sandbox. Any later execution launch must add a read-only root filesystem, dropped capabilities, no privileged mode, no Docker socket, restricted network access, resource and storage limits, a restrictive seccomp profile, and controlled input/output mounts. Those controls are not implemented in Phase 5.2. There is no execution protocol, job queue, result retrieval, API integration, AST validation, or sandbox enforcement yet.
+The image alone is not a sandbox. Phase 5.2 provides the immutable runtime image; Phase 5.3 defines the read-only root filesystem, dropped capabilities, no-privileged-mode, no-Docker-socket, restricted-network, resource/storage, seccomp, and controlled-input policy that a future execution runtime must apply. There is still no execution protocol, job queue, result retrieval, API integration, AST validation, or runtime sandbox enforcement.
 
 ## Run tests
 
@@ -1276,7 +1360,20 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–5.2 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, fake sleepers, and test-only service implementations, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage. Phase 5.2 tests statically verify the worker image configuration and run the worker entry point locally with a mocked health result; Docker runtime checks are performed separately by `execution_worker/verify_image.sh`.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–5.3 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, fake sleepers, and test-only service implementations, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage. Phase 5.2 tests statically verify the worker image configuration and run the worker entry point locally with a mocked health result; Docker image checks are performed separately by `execution_worker/verify_image.sh`. Phase 5.3 tests validate the sandbox policy statically; Docker-backed tests verify real host and runtime restrictions when Docker and the worker image are available, and otherwise skip.
+
+Run only the Phase 5.3 sandbox tests with:
+
+```bash
+pytest tests/test_phase53_sandbox.py -k "not docker"
+pytest tests/test_phase53_sandbox.py -k docker
+```
+
+Run the standalone Docker sandbox verifier with:
+
+```bash
+python execution_worker/verify_sandbox.py --build
+```
 
 Run only the Phase 5.2 worker-image tests with:
 

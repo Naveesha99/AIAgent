@@ -33,3 +33,4 @@
 **/.DS_Store
 README.md
 verify_image.sh
+verify_sandbox.py

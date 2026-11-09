@@ -19,6 +19,12 @@ RUN python -m pip install --no-cache-dir --requirement requirements.txt
 
 COPY --chown=worker:worker worker ./worker
 
+# Read-only dataset input mount point. The root filesystem is read-only at
+# execution time; this directory is never used for worker runtime files.
+RUN mkdir -p /input \
+    && chown root:root /input \
+    && chmod 0555 /input
+
 USER 10001:10001
 STOPSIGNAL SIGTERM
 
