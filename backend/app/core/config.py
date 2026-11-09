@@ -7,6 +7,16 @@ from typing import Literal, Optional
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.execution_limits import (
+    ABSOLUTE_EXECUTION_MAX_CODE_SIZE_BYTES,
+    ABSOLUTE_EXECUTION_MAX_STDERR_BYTES,
+    ABSOLUTE_EXECUTION_MAX_STDOUT_BYTES,
+    ABSOLUTE_EXECUTION_MAX_TIMEOUT_SECONDS,
+    DEFAULT_EXECUTION_MAX_CODE_SIZE_BYTES,
+    DEFAULT_EXECUTION_MAX_STDERR_BYTES,
+    DEFAULT_EXECUTION_MAX_STDOUT_BYTES,
+    DEFAULT_EXECUTION_MAX_TIMEOUT_SECONDS,
+)
 from app.core.llm_scenarios import DEFAULT_MOCK_SCENARIO, MOCK_SCENARIOS
 
 
@@ -49,6 +59,27 @@ class Settings(BaseSettings):
     llm_retry_jitter_ratio: float = Field(default=0.2, ge=0, le=1)
     llm_mock_scenario: str = Field(default=DEFAULT_MOCK_SCENARIO, min_length=1)
     llm_mock_model: str = Field(default="mock-deterministic", min_length=1)
+    execution_enabled: bool = False
+    execution_max_timeout_seconds: float = Field(
+        default=DEFAULT_EXECUTION_MAX_TIMEOUT_SECONDS,
+        gt=0,
+        le=ABSOLUTE_EXECUTION_MAX_TIMEOUT_SECONDS,
+    )
+    execution_max_code_size_bytes: int = Field(
+        default=DEFAULT_EXECUTION_MAX_CODE_SIZE_BYTES,
+        gt=0,
+        le=ABSOLUTE_EXECUTION_MAX_CODE_SIZE_BYTES,
+    )
+    execution_max_stdout_bytes: int = Field(
+        default=DEFAULT_EXECUTION_MAX_STDOUT_BYTES,
+        gt=0,
+        le=ABSOLUTE_EXECUTION_MAX_STDOUT_BYTES,
+    )
+    execution_max_stderr_bytes: int = Field(
+        default=DEFAULT_EXECUTION_MAX_STDERR_BYTES,
+        gt=0,
+        le=ABSOLUTE_EXECUTION_MAX_STDERR_BYTES,
+    )
 
     @field_validator("llm_provider", mode="before")
     @classmethod

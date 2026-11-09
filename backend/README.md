@@ -2,7 +2,7 @@
 
 The backend uses FastAPI and Pydantic. It provides a process-level health check and validates bounded CSV uploads before storing them in a private local directory. Dataset files expire after a configurable period. This local filesystem storage is intended for development and a single application instance, not production deployment.
 
-Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only: it is not executed, sandboxed, or used to calculate the requested answer. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
+Phase 4.1 adds a provider-independent LLM client abstraction and a Google Gemini implementation. Phase 4.2 adds natural-language question interpretation using that client. Phase 4.3 adds generation of untrusted pandas analysis code from a validated interpretation. Phase 4.4 adds strict Pydantic schemas and validation for generated code, tool requests, and the final agent response. Phase 4.5 adds centralized LLM error codes and HTTP mapping, bounded retries with jitter, normalized token usage metadata, structured safety-conscious logging, and a deterministic mock provider that requires no API key or network access. Phase 5.1 defines technology-independent execution request, status, result, output, and structured-error contracts plus a future execution service interface. Execution remains disabled by default, no execution API route is exposed, and no generated code is executed, sandboxed, compiled, or evaluated. The question and code-generation endpoints send bounded schema and aggregate statistics, never full CSV contents or raw row values; code generation also includes data-quality findings. Generated code is structurally validated and returned as text only. CSV upload, preview, metadata, profiling, data quality, and analytics remain independent of the LLM.
 
 ## Requirements
 
@@ -76,6 +76,11 @@ export LLM_RETRY_MAX_DELAY_SECONDS=30
 export LLM_RETRY_JITTER_RATIO=0.2
 export LLM_MOCK_SCENARIO=success
 export LLM_MOCK_MODEL=mock-deterministic
+export EXECUTION_ENABLED=false
+export EXECUTION_MAX_TIMEOUT_SECONDS=30
+export EXECUTION_MAX_CODE_SIZE_BYTES=50000
+export EXECUTION_MAX_STDOUT_BYTES=100000
+export EXECUTION_MAX_STDERR_BYTES=50000
 ```
 
 On Windows PowerShell:
@@ -106,6 +111,11 @@ $env:LLM_RETRY_MAX_DELAY_SECONDS = "30"
 $env:LLM_RETRY_JITTER_RATIO = "0.2"
 $env:LLM_MOCK_SCENARIO = "success"
 $env:LLM_MOCK_MODEL = "mock-deterministic"
+$env:EXECUTION_ENABLED = "false"
+$env:EXECUTION_MAX_TIMEOUT_SECONDS = "30"
+$env:EXECUTION_MAX_CODE_SIZE_BYTES = "50000"
+$env:EXECUTION_MAX_STDOUT_BYTES = "100000"
+$env:EXECUTION_MAX_STDERR_BYTES = "50000"
 ```
 
 `APP_ENV` accepts `development` or `production`. Development mode enables FastAPI debug error reporting. `MAX_UPLOAD_SIZE_BYTES` is the maximum accepted upload size, defaulting to 10 MiB (10,485,760 bytes). CSV validation limits default to 200 columns, 100,000 data rows, 1 MiB per field, and 200,000 physical lines. Override them using `MAX_CSV_COLUMNS`, `MAX_CSV_ROWS`, `MAX_CSV_FIELD_SIZE`, and `MAX_CSV_VALIDATION_LINES`, respectively. `ANALYTICS_MAX_RESULT_ROWS` defaults to 1000 and caps filter/sort result rows. `ANALYTICS_MAX_GROUPS` defaults to 100 and caps returned groups. `ANALYTICS_MAX_VALUE_FREQUENCIES` defaults to 10 and caps categorical top values in summaries. `DATASET_STORAGE_DIR` defaults to `backend/data/datasets`; a relative override is resolved relative to the backend directory. `DATASET_TTL_HOURS` defaults to 24 hours. `API_HOST` and `API_PORT` document the server bind address; pass those values to Uvicorn when overriding the defaults:
@@ -167,6 +177,11 @@ Defaults and validation:
 - `LLM_RETRY_JITTER_RATIO` defaults to `0.2` and must be between `0` and `1`. It adds bounded random variation to exponential delays; provider `Retry-After` guidance is respected without jitter.
 - `LLM_MOCK_SCENARIO` selects the deterministic mock behavior and defaults to `success`. Invalid scenario names are rejected during settings validation.
 - `LLM_MOCK_MODEL` identifies the mock model in responses and logs and defaults to `mock-deterministic`.
+- `EXECUTION_ENABLED` defaults to `false`. Enabling it only permits a future API to request an installed execution engine; it never creates an executor or executes code by itself.
+- `EXECUTION_MAX_TIMEOUT_SECONDS` defaults to `30`, must be greater than `0`, and is capped at `600`.
+- `EXECUTION_MAX_CODE_SIZE_BYTES` defaults to `50000`, must be greater than `0`, and is capped at `1000000`.
+- `EXECUTION_MAX_STDOUT_BYTES` defaults to `100000`, must be greater than `0`, and is capped at `2000000`.
+- `EXECUTION_MAX_STDERR_BYTES` defaults to `50000`, must be greater than `0`, and is capped at `2000000`.
 
 ### Choose an available model
 
@@ -1095,6 +1110,121 @@ A clarification response uses `status: "clarification_needed"` and a `clarificat
 
 Pydantic validates data shape, types, bounds, and schema membership. It does not make generated Python safe. Phase 4.4 does not use `eval`, `exec`, or `compile`, does not parse or sandbox generated code, does not execute it, and does not assume that a valid `GeneratedCode` object is safe to run. AST analysis, import allowlists, process isolation, and execution limits remain a future execution-engine concern. Tool requests are likewise validated as data only and are not executed.
 
+## Execution interface
+
+Phase 5.1 defines contracts only. There is no execution endpoint, worker, subprocess, Docker container, AST validator, sandbox, or `exec`/`eval`/`compile` path. `EXECUTION_ENABLED` remains `false` by default, and enabling it does not install an executor. The service factory always returns an explicit unavailable placeholder until a future phase supplies an implementation.
+
+### Execution request
+
+`ExecutionRequest` lives in `app/schemas/execution.py` and is independent of any execution technology. It generates a canonical UUID `execution_id` with `uuid4` unless a canonical identifier is supplied internally, validates `dataset_id` with the existing canonical dataset-ID rule, preserves the candidate `code`, and accepts a bounded timeout plus optional limited metadata.
+
+```json
+{
+  "execution_id": "3eb183ce-8a78-4cd5-b902-a8d4fa2c81cd",
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "code": "working = df.copy()\nresult = working['amount'].sum()",
+  "timeout_seconds": 10,
+  "metadata": {
+    "question": "What is the total amount?",
+    "operation": "aggregate"
+  }
+}
+```
+
+Request rules:
+
+- Code must not be empty or whitespace-only, and its UTF-8 byte size must not exceed `EXECUTION_MAX_CODE_SIZE_BYTES`.
+- `timeout_seconds` must be positive and must not exceed `EXECUTION_MAX_TIMEOUT_SECONDS`. The absolute schema ceiling is 600 seconds.
+- `metadata` only permits an optional bounded `question` and an optional existing analysis `operation`; unexpected fields are rejected.
+- Top-level unexpected fields are rejected. Paths, shells, environment maps, Docker images, memory/CPU overrides, network flags, and other unrestricted execution settings cannot be supplied.
+- `ExecutionRequest.from_payload(payload, settings)` applies the current server settings during validation. Direct construction applies the documented safe defaults.
+- The request schema never changes server limits and never enables execution.
+
+### Status lifecycle
+
+`ExecutionStatus` defines `pending`, `queued`, `running`, `completed`, `failed`, `timed_out`, `cancelled`, and `rejected`. `EXECUTION_STATUS_TRANSITIONS` defines the allowed lifecycle. `ExecutionStatus.can_transition_to`, `validate_execution_status_transition`, and `ExecutionStatusTransition` expose the same rules to API routes and workers.
+
+```text
+pending -> queued, running, failed, cancelled, rejected
+queued  -> running, failed, cancelled, rejected
+running -> completed, failed, timed_out, cancelled
+completed, failed, timed_out, cancelled, rejected -> terminal
+```
+
+Terminal statuses have no normal outgoing transitions. `completed` requires a non-null JSON `result` and no error. `failed`, `timed_out`, and `rejected` require a structured error. `rejected` may only report a pre-execution error. A timed-out result must report the `execution_timeout` code and category. Non-terminal states cannot contain completion data, a result, or an error.
+
+### Execution result and output
+
+`ExecutionResult` contains `execution_id`, `dataset_id`, `status`, optional timezone-aware `started_at` and `completed_at`, optional non-negative `duration_ms`, structured `stdout` and `stderr`, optional JSON `result`, optional `error`, and optional `resource_usage`.
+
+```json
+{
+  "execution_id": "3eb183ce-8a78-4cd5-b902-a8d4fa2c81cd",
+  "dataset_id": "16335394-bb59-48aa-b13a-3a1dc91bab12",
+  "status": "completed",
+  "started_at": "2026-01-01T00:00:00Z",
+  "completed_at": "2026-01-01T00:00:01Z",
+  "duration_ms": 1000,
+  "stdout": {
+    "content": "2\n",
+    "truncated": false,
+    "original_size_bytes": 2
+  },
+  "stderr": {
+    "content": "",
+    "truncated": false,
+    "original_size_bytes": 0
+  },
+  "result": {
+    "total_amount": 30
+  },
+  "error": null,
+  "resource_usage": {
+    "cpu_time_ms": 12.5,
+    "wall_time_ms": 1000,
+    "peak_memory_bytes": 1048576
+  }
+}
+```
+
+`ExecutionOutput` represents either captured stream. `content` preserves line breaks and diagnostics, `truncated` records whether the future engine clipped it, and `original_size_bytes` records the pre-truncation size when known. The result validator enforces `EXECUTION_MAX_STDOUT_BYTES` and `EXECUTION_MAX_STDERR_BYTES`; oversized streams are rejected, so a future engine must use the provided `bounded_execution_output(content, max_bytes)` helper before constructing a result. The helper clips on UTF-8 boundaries and never splits a multibyte character.
+
+Timestamps must include an offset or timezone. Completion cannot precede start, durations and resource values must be non-negative, and the entire result must serialize to finite standard JSON under the absolute result-size ceiling. Internal paths, environment data, provider internals, and arbitrary engine objects are not part of the schema.
+
+### Structured execution errors
+
+`ExecutionError` contains a stable `ExecutionErrorCode`, safe bounded `message`, matching `ExecutionErrorCategory`, optional sanitized `details`, and `retryable`. Codes are independent of Python exception names.
+
+| Code and category | Meaning |
+| --- | --- |
+| `invalid_execution_request` | The request failed validation. |
+| `dataset_not_found` | The referenced dataset is missing or expired. |
+| `invalid_generated_code` | Candidate code was rejected before execution. |
+| `execution_engine_unavailable` | No enabled engine or operation is available. |
+| `execution_failed` | Execution ran and failed. |
+| `execution_timeout` | Execution exceeded its timeout. |
+| `output_limit_exceeded` | Captured output exceeded a configured limit. |
+| `resource_limit_exceeded` | A resource boundary was exceeded. |
+| `execution_rejected_by_security_policy` | Policy rejected execution before running it. |
+| `internal_execution_error` | An internal execution failure occurred. |
+| `execution_cancelled` | Execution was cancelled. |
+
+Error messages are sanitized to remove stack traces, internal absolute paths, environment assignments, and secrets. Details are recursively bounded and redact unsafe keys or values. Error category and code must agree, so future routes can return one consistent error shape for request validation, missing datasets, policy rejection, engine availability, timeouts, resource limits, and runtime failures.
+
+### Service abstraction
+
+`app/services/execution_service.py` defines the abstract `ExecutionService` (also exported as `ExecutionEngine`) with these async contract methods:
+
+- `execute(request: ExecutionRequest) -> ExecutionResult`
+- `get_status(execution_id: UUID) -> ExecutionStatus`
+- `cancel(execution_id: UUID) -> ExecutionResult`
+
+`execute` is abstract. The default `get_status` and `cancel` implementations raise `ExecutionEngineUnavailableError` with an explicit `execution_engine_unavailable` structured error, so a future engine can implement only the operations it supports. `UnavailableExecutionService` implements all methods by raising that same explicit error and never claims to have executed code.
+
+`create_execution_service(settings, engine=None)` returns an injected future engine when provided. Otherwise it returns `UnavailableExecutionService`, whether execution is disabled or merely enabled without an installed implementation. There is intentionally no fake executor in production code.
+
+A future Docker-based engine can implement `ExecutionService` without changing these schemas: validate the request again against current settings, start or enqueue a bounded worker, return a result carrying the same IDs and statuses, truncate stdout/stderr with the helper before creating `ExecutionOutput`, measure duration/resource usage, and expose only safe `ExecutionError` values. The API layer and Pydantic contracts will not need to know about Docker, subprocesses, or worker internals.
+
 ## Run tests
 
 From `backend/`, with development dependencies installed:
@@ -1103,7 +1233,13 @@ From `backend/`, with development dependencies installed:
 pytest
 ```
 
-Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–4.5 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, and fake sleepers, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+Tests use FastAPI's in-process test client and isolated temporary storage directories; they do not start a separate server or contact external services. Phase 4.1–5.1 tests inject fake Gemini clients, mocked SDK outcomes, deterministic mock providers, fake sleepers, and test-only service implementations, so they do not require `GEMINI_API_KEY`, an internet connection, or paid API usage.
+
+Run only the Phase 5.1 execution-contract tests with:
+
+```bash
+pytest tests/test_phase51_execution_interface.py
+```
 
 Run only the Phase 4.5 provider reliability, usage, and mock-provider tests with:
 
